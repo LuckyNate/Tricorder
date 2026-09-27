@@ -90,7 +90,10 @@ function setRange(meters) {
     rangeRing.setRadius(currentRangeMeters);
   }
 
-  requestAnimationFrame(refitRadar);
+  requestAnimationFrame(() => {
+    refitRadar();
+    renderAllRouters();
+  });
 }
 
 function toggleRange() {
@@ -111,6 +114,7 @@ function setMode(mode) {
     requestAnimationFrame(() => {
       map.invalidateSize(false);
       refitRadar();
+      renderAllRouters();
     });
   }
 }
@@ -276,9 +280,19 @@ function buildProbabilityField(observations) {
   };
 }
 
+function cloudCellPixelSize() {
+  const container = map.getContainer();
+  const usableDiameter = Math.max(
+    1,
+    Math.min(container.clientWidth || 1, container.clientHeight || 1) - (RADAR_MARGIN_PX * 2)
+  );
+  const pixelsPerMeter = usableDiameter / Math.max(1, currentRangeMeters * 2);
+  return Math.max(3, Math.min(28, CLOUD_GRID_STEP_METERS * pixelsPerMeter));
+}
+
 function cloudCellIcon(probability, confidence) {
   const alpha = Math.max(0.03, Math.min(0.9, probability * 18 * confidence));
-  const size = 42;
+  const size = cloudCellPixelSize();
   return L.divIcon({
     className: '',
     html: `<div class="wifi-cloud-cell" style="opacity:${alpha}"></div>`,
@@ -305,6 +319,12 @@ function renderRouter(router) {
       zIndexOffset: Math.round(field.confidence * 1000)
     });
     router.layer.addLayer(marker);
+  });
+}
+
+function renderAllRouters() {
+  routers.forEach(router => {
+    if (router.observations.length) renderRouter(router);
   });
 }
 
@@ -355,7 +375,10 @@ function ingestWifiScan(observations) {
 }
 
 window.addEventListener('resize', () => {
-  requestAnimationFrame(refitRadar);
+  requestAnimationFrame(() => {
+    refitRadar();
+    renderAllRouters();
+  });
 });
 
 setRange(currentRangeMeters);
