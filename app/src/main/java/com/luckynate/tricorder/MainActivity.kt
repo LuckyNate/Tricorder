@@ -41,7 +41,7 @@ class MainActivity : Activity(), LocationListener {
         private const val SENSOR_PERMISSION_REQUEST = 1001
         private const val WIFI_SCAN_INTERVAL_MS = 15_000L
         private const val UPDATE_API_URL = "https://api.github.com/repos/LuckyNate/Tricorder/releases/tags/latest"
-        private val VERSIONED_APK_PATTERN = Regex("^Tricorder-0\\.1\\.(\\d+)\\.apk$")
+        private val RELEASE_VERSION_CODE_PATTERN = Regex("(?m)^versionCode=(\\d+)\\s*$")
     }
 
     private val wifiScanReceiver = object : BroadcastReceiver() {
@@ -236,18 +236,22 @@ class MainActivity : Activity(), LocationListener {
                 connection.disconnect()
 
                 val release = JSONObject(body)
+                val releaseNotes = release.optString("body")
+                val newestVersionCode = RELEASE_VERSION_CODE_PATTERN
+                    .find(releaseNotes)
+                    ?.groupValues
+                    ?.getOrNull(1)
+                    ?.toIntOrNull()
+                    ?: BuildConfig.VERSION_CODE
+
                 val assets = release.getJSONArray("assets")
-                var newestVersionCode = BuildConfig.VERSION_CODE
                 var latestDownloadUrl: String? = null
 
                 for (index in 0 until assets.length()) {
                     val asset = assets.getJSONObject(index)
-                    val name = asset.optString("name")
-                    if (name == "Tricorder-latest.apk") {
+                    if (asset.optString("name") == "Tricorder-latest.apk") {
                         latestDownloadUrl = asset.optString("browser_download_url")
-                    }
-                    VERSIONED_APK_PATTERN.matchEntire(name)?.groupValues?.getOrNull(1)?.toIntOrNull()?.let { version ->
-                        if (version > newestVersionCode) newestVersionCode = version
+                        break
                     }
                 }
 
