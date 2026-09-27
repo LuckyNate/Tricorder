@@ -20,6 +20,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -29,9 +30,18 @@ import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.ArrayDeque
 import kotlin.math.PI
+import kotlin.math.abs
 
 class MainActivity : Activity(), LocationListener, SensorEventListener {
+    private data class HeadingSample(
+        val timestampNanos: Long,
+        val heading: Float,
+        val accuracy: Int,
+        val source: String
+    )
+
     private lateinit var webView: WebView
     private lateinit var locationManager: LocationManager
     private lateinit var wifiManager: WifiManager
@@ -43,6 +53,8 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     private var smoothedHeadingDegrees: Float? = null
     private var headingAccuracy = SensorManager.SENSOR_STATUS_UNRELIABLE
     private var headingSource = "none"
+    private val locationHistory = ArrayDeque<Location>()
+    private val headingHistory = ArrayDeque<HeadingSample>()
     private var wifiReceiverRegistered = false
     private var updateCheckStarted = false
     private var pendingUpdateFile: File? = null
@@ -50,6 +62,8 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     companion object {
         private const val SENSOR_PERMISSION_REQUEST = 1001
         private const val SENSOR_FRAME_INTERVAL_MS = 33L
+        private const val MAX_LOCATION_HISTORY = 128
+        private const val MAX_HEADING_HISTORY = 256
         private const val UPDATE_API_URL = "https://api.github.com/repos/LuckyNate/Tricorder/releases/tags/latest"
         private val RELEASE_VERSION_CODE_PATTERN = Regex("(?m)^versionCode=(\\d+)\\s*$")
     }
@@ -187,12 +201,18 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
 
         latestHeadingDegrees = heading
         headingSource = "orientation"
+        recordHeadingSample(event.timestamp, heading, headingAccuracy, headingSource)
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
         if (sensor?.type == Sensor.TYPE_ROTATION_VECTOR) {
             headingAccuracy = accuracy
         }
+    }
+
+    private fun recordHeadingSample(timestampNanos: Long, heading: Float, accuracy: Int, source: String) {
+        headingHistory.addLast(HeadingSample(timestampNanos, heading, accuracy, source))
+        while (headingHistory.size > MAX_HEADING_HISTORY) headingHistory.removeFirst()
     }
 
     private fun sampleLocationFrame() {
@@ -204,7 +224,7 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
                     locationManager.getLastKnownLocation(provider)?.let { location ->
                         val current = latestLocation
                         if (current == null || location.elapsedRealtimeNanos >= current.elapsedRealtimeNanos) {
-                            latestLocation = location
+                            handleLocation(location)
                         }
                     }
                 }
@@ -220,11 +240,48 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
             latestHeadingDegrees = ((location.bearing % 360f) + 360f) % 360f
             headingAccuracy = SensorManager.SENSOR_STATUS_ACCURACY_MEDIUM
             headingSource = "motion"
+            recordHeadingSample(
+                SystemClock.elapsedRealtimeNanos(),
+                latestHeadingDegrees!!,
+                headingAccuracy,
+                headingSource
+            )
         }
     }
 
     private fun handleLocation(location: Location) {
-        latestLocation = location
+        val copy = Location(location)
+        latestLocation = copy
+        if (locationHistory.isEmpty() || copy.elapsedRealtimeNanos > locationHistory.peekLast().elapsedRealtimeNanos) {
+            locationHistory.addLast(copy)
+            while (locationHistory.size > MAX_LOCATION_HISTORY) locationHistory.removeFirst()
+        }
+    }
+
+    private fun nearestLocation(timestampNanos: Long): Location? {
+        var nearest: Location? = null
+        var nearestDelta = Long.MAX_VALUE
+        locationHistory.forEach { location ->
+            val delta = abs(location.elapsedRealtimeNanos - timestampNanos)
+            if (delta < nearestDelta) {
+                nearest = location
+                nearestDelta = delta
+            }
+        }
+        return nearest ?: latestLocation
+    }
+
+    private fun nearestHeading(timestampNanos: Long): HeadingSample? {
+        var nearest: HeadingSample? = null
+        var nearestDelta = Long.MAX_VALUE
+        headingHistory.forEach { sample ->
+            val delta = abs(sample.timestampNanos - timestampNanos)
+            if (delta < nearestDelta) {
+                nearest = sample
+                nearestDelta = delta
+            }
+        }
+        return nearest
     }
 
     override fun onLocationChanged(location: Location) {
@@ -269,12 +326,15 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     }
 
     private fun sendWifiResults() {
-        val location = latestLocation ?: return
         if (!hasWifiPermission() || !hasLocationPermission()) return
 
         try {
             val observations = JSONArray()
             wifiManager.scanResults.forEach { result ->
+                val sampleTimeNanos = result.timestamp * 1000L
+                val location = nearestLocation(sampleTimeNanos) ?: return@forEach
+                val heading = nearestHeading(sampleTimeNanos)
+
                 observations.put(JSONObject().apply {
                     put("bssid", result.BSSID ?: "")
                     put("ssid", result.SSID ?: "")
@@ -284,9 +344,11 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
                     put("latitude", location.latitude)
                     put("longitude", location.longitude)
                     put("accuracy", location.accuracy)
-                    latestHeadingDegrees?.let { put("heading", it) }
-                    put("headingSource", headingSource)
-                    put("headingAccuracy", headingAccuracy)
+                    heading?.let {
+                        put("heading", it.heading)
+                        put("headingSource", it.source)
+                        put("headingAccuracy", it.accuracy)
+                    }
                 })
             }
 
