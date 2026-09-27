@@ -10,15 +10,21 @@ import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.core.content.FileProvider
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 
 class MainActivity : Activity(), LocationListener {
     private lateinit var webView: WebView
@@ -28,10 +34,14 @@ class MainActivity : Activity(), LocationListener {
 
     private var latestLocation: Location? = null
     private var wifiReceiverRegistered = false
+    private var updateCheckStarted = false
+    private var pendingUpdateFile: File? = null
 
     companion object {
         private const val SENSOR_PERMISSION_REQUEST = 1001
         private const val WIFI_SCAN_INTERVAL_MS = 15_000L
+        private const val UPDATE_API_URL = "https://api.github.com/repos/LuckyNate/Tricorder/releases/tags/latest"
+        private val VERSIONED_APK_PATTERN = Regex("^Tricorder-0\\.1\\.(\\d+)\\.apk$")
     }
 
     private val wifiScanReceiver = object : BroadcastReceiver() {
@@ -66,6 +76,7 @@ class MainActivity : Activity(), LocationListener {
         locationManager = getSystemService(LOCATION_SERVICE) as LocationManager
         wifiManager = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
         requestSensorPermissions()
+        checkForUpdatesOnce()
     }
 
     private fun requestSensorPermissions() {
@@ -207,6 +218,109 @@ class MainActivity : Activity(), LocationListener {
         }
     }
 
+    private fun checkForUpdatesOnce() {
+        if (updateCheckStarted) return
+        updateCheckStarted = true
+
+        Thread {
+            try {
+                val connection = (URL(UPDATE_API_URL).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 8_000
+                    readTimeout = 12_000
+                    requestMethod = "GET"
+                    setRequestProperty("Accept", "application/vnd.github+json")
+                    setRequestProperty("User-Agent", "Tricorder/${BuildConfig.VERSION_NAME}")
+                }
+
+                val body = connection.inputStream.bufferedReader().use { it.readText() }
+                connection.disconnect()
+
+                val release = JSONObject(body)
+                val assets = release.getJSONArray("assets")
+                var newestVersionCode = BuildConfig.VERSION_CODE
+                var latestDownloadUrl: String? = null
+
+                for (index in 0 until assets.length()) {
+                    val asset = assets.getJSONObject(index)
+                    val name = asset.optString("name")
+                    if (name == "Tricorder-latest.apk") {
+                        latestDownloadUrl = asset.optString("browser_download_url")
+                    }
+                    VERSIONED_APK_PATTERN.matchEntire(name)?.groupValues?.getOrNull(1)?.toIntOrNull()?.let { version ->
+                        if (version > newestVersionCode) newestVersionCode = version
+                    }
+                }
+
+                if (newestVersionCode > BuildConfig.VERSION_CODE && !latestDownloadUrl.isNullOrBlank()) {
+                    sendStatus("Update 0.1.$newestVersionCode found")
+                    downloadUpdate(latestDownloadUrl!!, newestVersionCode)
+                }
+            } catch (_: Exception) {
+                // Updating is opportunistic; sensor operation continues normally if GitHub is unavailable.
+            }
+        }.start()
+    }
+
+    private fun downloadUpdate(downloadUrl: String, versionCode: Int) {
+        try {
+            sendStatus("Downloading update 0.1.$versionCode")
+            val updateDir = File(cacheDir, "updates").apply { mkdirs() }
+            val apkFile = File(updateDir, "Tricorder-update.apk")
+
+            val connection = (URL(downloadUrl).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 10_000
+                readTimeout = 30_000
+                instanceFollowRedirects = true
+                setRequestProperty("User-Agent", "Tricorder/${BuildConfig.VERSION_NAME}")
+            }
+
+            connection.inputStream.use { input ->
+                apkFile.outputStream().use { output -> input.copyTo(output) }
+            }
+            connection.disconnect()
+
+            runOnUiThread { beginUpdateInstall(apkFile) }
+        } catch (_: Exception) {
+            sendStatus("Update download failed")
+        }
+    }
+
+    private fun beginUpdateInstall(apkFile: File) {
+        if (!apkFile.exists()) return
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
+            pendingUpdateFile = apkFile
+            sendStatus("Allow Tricorder to install updates")
+            startActivity(
+                Intent(
+                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:$packageName")
+                )
+            )
+            return
+        }
+
+        launchPackageInstaller(apkFile)
+    }
+
+    private fun launchPackageInstaller(apkFile: File) {
+        try {
+            val uri = FileProvider.getUriForFile(
+                this,
+                "$packageName.fileprovider",
+                apkFile
+            )
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            sendStatus("Installing update")
+            startActivity(intent)
+        } catch (_: Exception) {
+            sendStatus("Update installer unavailable")
+        }
+    }
+
     private fun sendLocation(location: Location) {
         val script = "window.Tricorder && window.Tricorder.onLocation(${location.latitude},${location.longitude},${location.accuracy});"
         runOnUiThread { webView.evaluateJavascript(script, null) }
@@ -220,6 +334,14 @@ class MainActivity : Activity(), LocationListener {
 
     override fun onResume() {
         super.onResume()
+
+        pendingUpdateFile?.let { apkFile ->
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()) {
+                pendingUpdateFile = null
+                launchPackageInstaller(apkFile)
+            }
+        }
+
         if (::locationManager.isInitialized && ::wifiManager.isInitialized) requestSensorPermissions()
     }
 
