@@ -39,14 +39,16 @@ class MainActivity : Activity(), LocationListener {
 
     companion object {
         private const val SENSOR_PERMISSION_REQUEST = 1001
-        private const val WIFI_SCAN_INTERVAL_MS = 15_000L
+        private const val WIFI_SCAN_INTERVAL_MS = 1_000L
         private const val UPDATE_API_URL = "https://api.github.com/repos/LuckyNate/Tricorder/releases/tags/latest"
         private val RELEASE_VERSION_CODE_PATTERN = Regex("(?m)^versionCode=(\\d+)\\s*$")
     }
 
     private val wifiScanReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == WifiManager.SCAN_RESULTS_AVAILABLE_ACTION) {
+            if (intent?.action == WifiManager.SCAN_RESULTS_AVAILABLE_ACTION &&
+                intent.getBooleanExtra(WifiManager.EXTRA_RESULTS_UPDATED, false)
+            ) {
                 sendWifiResults()
             }
         }
@@ -180,7 +182,6 @@ class MainActivity : Activity(), LocationListener {
 
         handler.removeCallbacks(wifiScanLoop)
         handler.post(wifiScanLoop)
-        sendWifiResults()
     }
 
     private fun requestWifiScan() {
@@ -204,7 +205,7 @@ class MainActivity : Activity(), LocationListener {
                     put("ssid", result.SSID ?: "")
                     put("rssi", result.level)
                     put("frequency", result.frequency)
-                    put("timestamp", System.currentTimeMillis())
+                    put("timestamp", result.timestamp / 1000L)
                     put("latitude", location.latitude)
                     put("longitude", location.longitude)
                     put("accuracy", location.accuracy)
