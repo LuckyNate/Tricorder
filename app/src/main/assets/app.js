@@ -1,4 +1,5 @@
 const RANGE_METERS = 100;
+const RADAR_MARGIN_PX = 12;
 const MAX_OBSERVATIONS_PER_ROUTER = 24;
 const CLOUD_GRID_RADIUS_METERS = 100;
 const CLOUD_GRID_STEP_METERS = 12.5;
@@ -7,6 +8,9 @@ const RSSI_AT_ONE_METER = -45;
 const PATH_LOSS_EXPONENT = 2.6;
 
 const statusEl = document.getElementById('status');
+const modeToggle = document.getElementById('modeToggle');
+const mode2d = document.getElementById('mode2d');
+const mode3d = document.getElementById('mode3d');
 
 const map = L.map('map', {
   zoomControl: false,
@@ -39,13 +43,53 @@ let accuracyRing = null;
 let rangeRing = null;
 let hasInitialFix = false;
 let deviceLocation = null;
+let currentMode = '2d';
 
 const routers = new Map();
 
 function fitToRange(latlng) {
+  const container = map.getContainer();
+  const width = container.clientWidth;
+  const height = container.clientHeight;
+  if (!width || !height) return;
+
+  const usableDiameter = Math.max(1, Math.min(width, height) - (RADAR_MARGIN_PX * 2));
+  const padX = Math.max(RADAR_MARGIN_PX, (width - usableDiameter) / 2);
+  const padY = Math.max(RADAR_MARGIN_PX, (height - usableDiameter) / 2);
   const bounds = L.latLng(latlng.lat, latlng.lng).toBounds(RANGE_METERS * 2);
-  map.fitBounds(bounds, { padding: [8, 8], animate: false });
+
+  map.fitBounds(bounds, {
+    paddingTopLeft: [padX, padY],
+    paddingBottomRight: [padX, padY],
+    animate: false
+  });
 }
+
+function refitRadar() {
+  if (currentMode !== '2d' || !deviceLocation) return;
+  map.invalidateSize(false);
+  fitToRange(L.latLng(deviceLocation.latitude, deviceLocation.longitude));
+}
+
+function setMode(mode) {
+  currentMode = mode === '3d' ? '3d' : '2d';
+  const is3d = currentMode === '3d';
+  document.body.classList.toggle('mode-3d', is3d);
+  modeToggle.setAttribute('aria-pressed', String(is3d));
+  mode3d.classList.toggle('active', is3d);
+  mode2d.classList.toggle('active', !is3d);
+
+  if (!is3d) {
+    requestAnimationFrame(() => {
+      map.invalidateSize(false);
+      refitRadar();
+    });
+  }
+}
+
+modeToggle.addEventListener('click', () => {
+  setMode(currentMode === '2d' ? '3d' : '2d');
+});
 
 function updateLocation(latitude, longitude, accuracy) {
   const latlng = L.latLng(latitude, longitude);
@@ -69,11 +113,13 @@ function updateLocation(latitude, longitude, accuracy) {
     accuracyRing.setLatLng(latlng).setRadius(Math.max(1, accuracy || 1));
   }
 
-  if (!hasInitialFix) {
-    fitToRange(latlng);
-    hasInitialFix = true;
-  } else {
-    map.panTo(latlng, { animate: true, duration: 0.35, noMoveStart: true });
+  if (currentMode === '2d') {
+    if (!hasInitialFix) {
+      fitToRange(latlng);
+      hasInitialFix = true;
+    } else {
+      map.panTo(latlng, { animate: true, duration: 0.35, noMoveStart: true });
+    }
   }
 
   statusEl.textContent = accuracy
@@ -277,6 +323,10 @@ function ingestWifiScan(observations) {
   const visible = [...routers.values()].filter(router => router.layer).length;
   if (visible) statusEl.textContent = `${visible} Wi-Fi targets`;
 }
+
+window.addEventListener('resize', () => {
+  requestAnimationFrame(refitRadar);
+});
 
 window.Tricorder = {
   onLocation(latitude, longitude, accuracy) {
