@@ -8,12 +8,64 @@ const PATH_LOSS_EXPONENT = 2.6;
 const OUTER_CLOUD_MASS = 0.82;
 const INNER_CLOUD_MASS = 0.48;
 const RENDER_INTERVAL_MS = 1000 / 30;
+const MIN_HEADING_SWEEP_DEGREES = 45;
 
 const statusEl = document.getElementById('status');
 const rangeEl = document.getElementById('range');
 const modeToggle = document.getElementById('modeToggle');
 const mode2d = document.getElementById('mode2d');
 const mode3d = document.getElementById('mode3d');
+const sensorControlsEl = document.getElementById('sensorControls');
+
+class ScannerSensor {
+  constructor({ id, label, color, paneName, usesHeading = false, targets = null, onVisibilityChange = null }) {
+    this.id = id;
+    this.label = label;
+    this.color = color;
+    this.paneName = paneName;
+    this.usesHeading = usesHeading;
+    this.targets = targets;
+    this.enabled = true;
+    this.onVisibilityChange = onVisibilityChange;
+  }
+
+  setEnabled(enabled) {
+    const next = Boolean(enabled);
+    if (this.enabled === next) return;
+    this.enabled = next;
+    if (typeof this.onVisibilityChange === 'function') this.onVisibilityChange(next);
+    renderSensorControls();
+  }
+
+  toggle() {
+    this.setEnabled(!this.enabled);
+  }
+}
+
+const sensorRegistry = new Map();
+
+function registerSensor(sensor) {
+  sensorRegistry.set(sensor.id, sensor);
+  renderSensorControls();
+  return sensor;
+}
+
+function renderSensorControls() {
+  if (!sensorControlsEl) return;
+  sensorControlsEl.replaceChildren();
+
+  sensorRegistry.forEach(sensor => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'sensor-toggle';
+    button.textContent = sensor.label;
+    button.style.background = sensor.color;
+    button.setAttribute('aria-pressed', String(sensor.enabled));
+    button.setAttribute('aria-label', `${sensor.enabled ? 'Hide' : 'Show'} ${sensor.label}`);
+    button.addEventListener('click', () => sensor.toggle());
+    sensorControlsEl.appendChild(button);
+  });
+}
 
 const map = L.map('map', {
   zoomControl: false,
@@ -51,9 +103,40 @@ let deviceLocation = null;
 let currentMode = '2d';
 let currentRangeMeters = RANGE_OPTIONS[0];
 let lastRenderTime = 0;
+let currentHeading = null;
+let currentHeadingAccuracy = 0;
+let currentHeadingSource = 'none';
 
 const routers = new Map();
 const dirtyRouters = new Set();
+
+function clearRouterLayer(router) {
+  if (router.layer) {
+    map.removeLayer(router.layer);
+    router.layer = null;
+  }
+  router.visualLayers = [];
+}
+
+function setWifiVisibility(visible) {
+  if (!visible) {
+    routers.forEach(clearRouterLayer);
+    return;
+  }
+  routers.forEach((router, bssid) => {
+    if (router.observations.length) dirtyRouters.add(bssid);
+  });
+}
+
+const wifiSensor = registerSensor(new ScannerSensor({
+  id: 'wifi',
+  label: 'WI-FI SOURCE',
+  color: '#78b4ff',
+  paneName: 'wifiClouds',
+  usesHeading: true,
+  targets: routers,
+  onVisibilityChange: setWifiVisibility
+}));
 
 function rangeLabel(meters) {
   return meters >= 1000
@@ -119,9 +202,15 @@ function setMode(mode) {
 rangeEl.addEventListener('click', toggleRange);
 modeToggle.addEventListener('click', () => setMode(currentMode === '2d' ? '3d' : '2d'));
 
-function updateLocation(latitude, longitude, accuracy) {
+function updateLocation(latitude, longitude, accuracy, bearing, speed) {
   const latlng = L.latLng(latitude, longitude);
-  deviceLocation = { latitude, longitude, accuracy: Number(accuracy) || 1 };
+  deviceLocation = {
+    latitude,
+    longitude,
+    accuracy: Number(accuracy) || 1,
+    bearing: Number.isFinite(Number(bearing)) ? Number(bearing) : null,
+    speed: Number(speed) || 0
+  };
 
   if (!deviceMarker) {
     deviceMarker = L.marker(latlng, { icon: deviceIcon, interactive: false }).addTo(map);
@@ -153,6 +242,14 @@ function updateLocation(latitude, longitude, accuracy) {
   statusEl.textContent = accuracy ? `±${Math.round(accuracy)} m` : 'Location active';
 }
 
+function updateHeading(heading, accuracy, source) {
+  const numericHeading = Number(heading);
+  if (!Number.isFinite(numericHeading)) return;
+  currentHeading = ((numericHeading % 360) + 360) % 360;
+  currentHeadingAccuracy = Number(accuracy) || 0;
+  currentHeadingSource = String(source || 'none');
+}
+
 function metersPerDegreeLat() {
   return 111320;
 }
@@ -173,6 +270,47 @@ function distanceMeters(aLat, aLng, bLat, bLng) {
   const north = (bLat - aLat) * metersPerDegreeLat();
   const east = (bLng - aLng) * metersPerDegreeLng(meanLat);
   return Math.hypot(east, north);
+}
+
+function bearingDegrees(aLat, aLng, bLat, bLng) {
+  const meanLat = (aLat + bLat) * 0.5;
+  const north = (bLat - aLat) * metersPerDegreeLat();
+  const east = (bLng - aLng) * metersPerDegreeLng(meanLat);
+  return (Math.atan2(east, north) * 180 / Math.PI + 360) % 360;
+}
+
+function angularDifferenceDegrees(a, b) {
+  return ((a - b + 540) % 360) - 180;
+}
+
+function headingAccuracyWeight(accuracy) {
+  const value = Number(accuracy) || 0;
+  if (value >= 3) return 1;
+  if (value === 2) return 0.75;
+  if (value === 1) return 0.45;
+  return 0.2;
+}
+
+function headingObservations(observations) {
+  return observations.filter(observation =>
+    Number.isFinite(observation.heading) && observation.headingSource === 'orientation'
+  );
+}
+
+function headingSweepDegrees(observations) {
+  const headings = headingObservations(observations)
+    .map(observation => ((observation.heading % 360) + 360) % 360)
+    .sort((a, b) => a - b);
+
+  if (headings.length < 2) return 0;
+
+  let largestGap = 0;
+  for (let i = 0; i < headings.length; i += 1) {
+    const current = headings[i];
+    const next = i === headings.length - 1 ? headings[0] + 360 : headings[i + 1];
+    largestGap = Math.max(largestGap, next - current);
+  }
+  return 360 - largestGap;
 }
 
 function estimatedRangeFromRssi(rssi) {
@@ -289,6 +427,11 @@ function candidateCloud(observations) {
   const center = weightedObservationCenter(observations);
   const newest = Math.max(...observations.map(o => o.timestamp));
   const spread = observationSpread(observations);
+  const headingSweep = headingSweepDegrees(observations);
+  const directionalObservations = headingObservations(observations);
+  const meanDirectionalRssi = directionalObservations.length
+    ? directionalObservations.reduce((sum, observation) => sum + Number(observation.rssi), 0) / directionalObservations.length
+    : null;
   const maxExpectedRange = Math.max(...observations.map(o => estimatedRangeFromRssi(o.rssi)));
   const solverRadius = Math.min(
     MAX_SOLVER_RADIUS_METERS,
@@ -317,6 +460,24 @@ function candidateCloud(observations) {
         const weight = observationWeight(observation, newest);
         logLikelihood += weight * -0.5 * Math.pow(residual / sigma, 2);
         totalWeight += weight;
+
+        if (
+          meanDirectionalRssi !== null &&
+          Number.isFinite(observation.heading) &&
+          observation.headingSource === 'orientation'
+        ) {
+          const candidateBearing = bearingDegrees(
+            observation.latitude,
+            observation.longitude,
+            candidate.lat,
+            candidate.lng
+          );
+          const angleDelta = angularDifferenceDegrees(candidateBearing, observation.heading);
+          const alignment = Math.cos(angleDelta * Math.PI / 180);
+          const signalDelta = Math.max(-1.5, Math.min(1.5, (Number(observation.rssi) - meanDirectionalRssi) / 8));
+          const headingQuality = headingAccuracyWeight(observation.headingAccuracy);
+          logLikelihood += weight * signalDelta * alignment * headingQuality * 0.7;
+        }
       });
 
       const score = totalWeight ? logLikelihood / totalWeight : -Infinity;
@@ -365,10 +526,18 @@ function candidateCloud(observations) {
   const rmsSpread = Math.sqrt(rmsTotal);
   const countConfidence = Math.min(1, observations.length / 12);
   const geometryConfidence = Math.min(1, spread / 45);
+  const headingGeometryConfidence = Math.min(1, headingSweep / 180);
   const concentrationConfidence = Math.max(0, Math.min(1, 1 - rmsSpread / solverRadius));
   const confidence = Math.max(
     0.14,
-    Math.min(1, 0.12 + countConfidence * 0.25 + geometryConfidence * 0.38 + concentrationConfidence * 0.25)
+    Math.min(
+      1,
+      0.12 +
+      countConfidence * 0.20 +
+      geometryConfidence * 0.25 +
+      headingGeometryConfidence * 0.20 +
+      concentrationConfidence * 0.23
+    )
   );
 
   return {
@@ -376,14 +545,18 @@ function candidateCloud(observations) {
     center,
     candidates,
     confidence,
-    solverRadius
+    solverRadius,
+    headingSweep
   };
 }
 
 function solveRouterCloud(observations) {
   if (!observations.length) return null;
   const spread = observationSpread(observations);
-  if (spread < 5) return unresolvedCloud(observations);
+  const headingSweep = headingSweepDegrees(observations);
+  const hasMovementGeometry = spread >= 5;
+  const hasRotationGeometry = headingObservations(observations).length >= 3 && headingSweep >= MIN_HEADING_SWEEP_DEGREES;
+  if (!hasMovementGeometry && !hasRotationGeometry) return unresolvedCloud(observations);
   return candidateCloud(observations) || unresolvedCloud(observations);
 }
 
@@ -463,21 +636,13 @@ function convexHull(points) {
   return lower.concat(upper);
 }
 
-function clearRouterLayer(router) {
-  if (router.layer) {
-    map.removeLayer(router.layer);
-    router.layer = null;
-  }
-  router.visualLayers = [];
-}
-
 function addAnnulusLayers(layers, cloud) {
   const outer = ringPoints(cloud.centerLat, cloud.centerLng, cloud.outerRadius);
   const inner = ringPoints(cloud.centerLat, cloud.centerLng, cloud.innerRadius).reverse();
   layers.push(L.polygon([outer, inner], {
-    pane: 'wifiClouds',
+    pane: wifiSensor.paneName,
     stroke: false,
-    fillColor: '#78b4ff',
+    fillColor: wifiSensor.color,
     fillOpacity: 0.045 + cloud.confidence * 0.075,
     fillRule: 'evenodd',
     interactive: false
@@ -492,10 +657,10 @@ function addFieldMassLayers(layers, field, targetMass, opacity) {
     if (cluster.length < 3) {
       cluster.forEach(cell => {
         layers.push(L.circle([cell.lat, cell.lng], {
-          pane: 'wifiClouds',
+          pane: wifiSensor.paneName,
           radius: SOLVER_STEP_METERS * 0.9,
           stroke: false,
-          fillColor: '#78b4ff',
+          fillColor: wifiSensor.color,
           fillOpacity: opacity,
           interactive: false
         }));
@@ -506,9 +671,9 @@ function addFieldMassLayers(layers, field, targetMass, opacity) {
     const hull = convexHull(cluster);
     if (hull.length < 3) return;
     layers.push(L.polygon(hull.map(cell => [cell.lat, cell.lng]), {
-      pane: 'wifiClouds',
+      pane: wifiSensor.paneName,
       stroke: false,
-      fillColor: '#78b4ff',
+      fillColor: wifiSensor.color,
       fillOpacity: opacity,
       smoothFactor: 1.4,
       interactive: false
@@ -517,6 +682,11 @@ function addFieldMassLayers(layers, field, targetMass, opacity) {
 }
 
 function renderRouter(router) {
+  if (!wifiSensor.enabled) {
+    clearRouterLayer(router);
+    return;
+  }
+
   const cloud = solveRouterCloud(router.observations);
   if (!cloud) return;
 
@@ -534,7 +704,7 @@ function renderRouter(router) {
     if (cloud.confidence >= 0.68 && cloud.candidates.length) {
       const best = cloud.candidates[0];
       layers.push(L.circleMarker([best.lat, best.lng], {
-        pane: 'wifiClouds',
+        pane: wifiSensor.paneName,
         radius: 2.5 + cloud.confidence * 2,
         stroke: false,
         fillColor: '#c8e1ff',
@@ -549,6 +719,7 @@ function renderRouter(router) {
 }
 
 function orderRouterLayers() {
+  if (!wifiSensor.enabled) return;
   [...routers.values()]
     .filter(router => router.visualLayers?.length)
     .sort((a, b) => a.confidence - b.confidence)
@@ -564,7 +735,7 @@ function scannerFrame(timestamp) {
   if (timestamp - lastRenderTime < RENDER_INTERVAL_MS) return;
   lastRenderTime = timestamp;
 
-  if (!dirtyRouters.size) return;
+  if (!dirtyRouters.size || !wifiSensor.enabled) return;
 
   dirtyRouters.forEach(bssid => {
     const router = routers.get(bssid);
@@ -608,7 +779,10 @@ function ingestWifiScan(observations) {
       timestamp,
       latitude: Number(raw.latitude),
       longitude: Number(raw.longitude),
-      accuracy: Number(raw.accuracy) || 25
+      accuracy: Number(raw.accuracy) || 25,
+      heading: Number.isFinite(Number(raw.heading)) ? Number(raw.heading) : null,
+      headingSource: String(raw.headingSource || 'none'),
+      headingAccuracy: Number(raw.headingAccuracy) || 0
     });
 
     if (router.observations.length > MAX_OBSERVATIONS_PER_ROUTER) {
@@ -628,13 +802,22 @@ setRange(currentRangeMeters);
 requestAnimationFrame(scannerFrame);
 
 window.Tricorder = {
-  onLocation(latitude, longitude, accuracy) {
-    updateLocation(Number(latitude), Number(longitude), Number(accuracy));
+  onLocation(latitude, longitude, accuracy, bearing, speed) {
+    updateLocation(Number(latitude), Number(longitude), Number(accuracy), Number(bearing), Number(speed));
+  },
+  onHeading(heading, accuracy, source) {
+    updateHeading(Number(heading), Number(accuracy), source);
   },
   onWifiScan(observations) {
     ingestWifiScan(observations);
   },
   onStatus(message) {
     statusEl.textContent = message;
+  },
+  registerSensor(sensorDefinition) {
+    return registerSensor(new ScannerSensor(sensorDefinition));
+  },
+  getSensor(id) {
+    return sensorRegistry.get(id) || null;
   }
 };
