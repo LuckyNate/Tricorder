@@ -1,5 +1,5 @@
-const RANGE_METERS = 100;
 const RADAR_MARGIN_PX = 12;
+const RANGE_OPTIONS = [100, 1000];
 const MAX_OBSERVATIONS_PER_ROUTER = 24;
 const CLOUD_GRID_RADIUS_METERS = 100;
 const CLOUD_GRID_STEP_METERS = 12.5;
@@ -8,6 +8,7 @@ const RSSI_AT_ONE_METER = -45;
 const PATH_LOSS_EXPONENT = 2.6;
 
 const statusEl = document.getElementById('status');
+const rangeEl = document.getElementById('range');
 const modeToggle = document.getElementById('modeToggle');
 const mode2d = document.getElementById('mode2d');
 const mode3d = document.getElementById('mode3d');
@@ -21,7 +22,9 @@ const map = L.map('map', {
   boxZoom: false,
   keyboard: false,
   tap: false,
-  touchZoom: false
+  touchZoom: false,
+  zoomSnap: 0.01,
+  zoomDelta: 0.25
 });
 
 L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -44,8 +47,15 @@ let rangeRing = null;
 let hasInitialFix = false;
 let deviceLocation = null;
 let currentMode = '2d';
+let currentRangeMeters = RANGE_OPTIONS[0];
 
 const routers = new Map();
+
+function rangeLabel(meters) {
+  return meters >= 1000
+    ? `${meters / 1000} km radius`
+    : `${meters} m radius`;
+}
 
 function fitToRange(latlng) {
   const container = map.getContainer();
@@ -56,7 +66,7 @@ function fitToRange(latlng) {
   const usableDiameter = Math.max(1, Math.min(width, height) - (RADAR_MARGIN_PX * 2));
   const padX = Math.max(RADAR_MARGIN_PX, (width - usableDiameter) / 2);
   const padY = Math.max(RADAR_MARGIN_PX, (height - usableDiameter) / 2);
-  const bounds = L.latLng(latlng.lat, latlng.lng).toBounds(RANGE_METERS * 2);
+  const bounds = L.latLng(latlng.lat, latlng.lng).toBounds(currentRangeMeters * 2);
 
   map.fitBounds(bounds, {
     paddingTopLeft: [padX, padY],
@@ -69,6 +79,24 @@ function refitRadar() {
   if (currentMode !== '2d' || !deviceLocation) return;
   map.invalidateSize(false);
   fitToRange(L.latLng(deviceLocation.latitude, deviceLocation.longitude));
+}
+
+function setRange(meters) {
+  currentRangeMeters = RANGE_OPTIONS.includes(meters) ? meters : RANGE_OPTIONS[0];
+  rangeEl.textContent = rangeLabel(currentRangeMeters);
+  rangeEl.setAttribute('aria-label', `Radar range ${rangeLabel(currentRangeMeters)}. Tap to change.`);
+
+  if (rangeRing) {
+    rangeRing.setRadius(currentRangeMeters);
+  }
+
+  requestAnimationFrame(refitRadar);
+}
+
+function toggleRange() {
+  const index = RANGE_OPTIONS.indexOf(currentRangeMeters);
+  const nextIndex = (index + 1) % RANGE_OPTIONS.length;
+  setRange(RANGE_OPTIONS[nextIndex]);
 }
 
 function setMode(mode) {
@@ -87,6 +115,8 @@ function setMode(mode) {
   }
 }
 
+rangeEl.addEventListener('click', toggleRange);
+
 modeToggle.addEventListener('click', () => {
   setMode(currentMode === '2d' ? '3d' : '2d');
 });
@@ -98,7 +128,7 @@ function updateLocation(latitude, longitude, accuracy) {
   if (!deviceMarker) {
     deviceMarker = L.marker(latlng, { icon: deviceIcon, interactive: false }).addTo(map);
     rangeRing = L.circle(latlng, {
-      radius: RANGE_METERS,
+      radius: currentRangeMeters,
       className: 'range-ring',
       interactive: false
     }).addTo(map);
@@ -109,7 +139,7 @@ function updateLocation(latitude, longitude, accuracy) {
     }).addTo(map);
   } else {
     deviceMarker.setLatLng(latlng);
-    rangeRing.setLatLng(latlng);
+    rangeRing.setLatLng(latlng).setRadius(currentRangeMeters);
     accuracyRing.setLatLng(latlng).setRadius(Math.max(1, accuracy || 1));
   }
 
@@ -327,6 +357,8 @@ function ingestWifiScan(observations) {
 window.addEventListener('resize', () => {
   requestAnimationFrame(refitRadar);
 });
+
+setRange(currentRangeMeters);
 
 window.Tricorder = {
   onLocation(latitude, longitude, accuracy) {
