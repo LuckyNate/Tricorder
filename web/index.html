@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#08120f">
+  <title>Tricorder</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main id="app">
+    <section id="radarPanel" class="primary-panel">
+      <div id="radarFrame">
+        <div id="map" aria-label="100 meter local radar"></div>
+        <div id="radarMask" aria-hidden="true"></div>
+        <div id="rangeLabel">100 m</div>
+        <div id="headingReadout">---°</div>
+      </div>
+    </section>
+
+    <section id="threeDPanel" class="primary-panel hidden" aria-label="3D target view">
+      <video id="cameraFeed" autoplay muted playsinline></video>
+      <div id="arOverlay">
+        <div id="arReticle"></div>
+        <div id="arTargetLabel">NO TARGET</div>
+      </div>
+    </section>
+
+    <aside id="statusPanel">
+      <header>
+        <div>
+          <h1>TRICORDER</h1>
+          <div id="modeLabel">RADAR</div>
+        </div>
+        <button id="modeToggle" type="button" aria-pressed="false">3D VIEW</button>
+      </header>
+
+      <section class="status-block">
+        <div class="status-row"><span>RANGE</span><strong id="rangeValue">100 m</strong></div>
+        <div class="status-row"><span>HEADING</span><strong id="headingValue">---</strong></div>
+        <div class="status-row"><span>POSITION</span><strong id="positionValue">WAITING</strong></div>
+      </section>
+
+      <section class="target-block">
+        <div class="section-title">SELECTED TARGET</div>
+        <div id="targetEmpty">No target selected</div>
+        <div id="targetDetails" class="hidden">
+          <div class="target-name" id="targetName">---</div>
+          <div class="status-row"><span>TYPE</span><strong id="targetType">---</strong></div>
+          <div class="status-row"><span>DISTANCE</span><strong id="targetDistance">---</strong></div>
+          <div class="status-row"><span>BEARING</span><strong id="targetBearing">---</strong></div>
+          <div class="status-row"><span>CONFIDENCE</span><strong id="targetConfidence">---</strong></div>
+          <div class="status-row"><span>AGE</span><strong id="targetAge">---</strong></div>
+        </div>
+      </section>
+
+      <section class="status-block source-status">
+        <div class="section-title">STATUS</div>
+        <div id="systemStatus">WebView ready. Waiting for device bridge.</div>
+      </section>
+    </aside>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
