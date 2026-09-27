@@ -1,10 +1,12 @@
 const RADAR_MARGIN_PX = 12;
 const RANGE_OPTIONS = [10, 50, 100, 500, 1000];
 const MAX_OBSERVATIONS_PER_ROUTER = 24;
-const SOLVER_RADIUS_METERS = 120;
 const SOLVER_STEP_METERS = 8;
+const MAX_SOLVER_RADIUS_METERS = 220;
 const RSSI_AT_ONE_METER = -45;
 const PATH_LOSS_EXPONENT = 2.6;
+const OUTER_CLOUD_MASS = 0.82;
+const INNER_CLOUD_MASS = 0.48;
 
 const statusEl = document.getElementById('status');
 const rangeEl = document.getElementById('range');
@@ -175,9 +177,14 @@ function estimatedRangeFromRssi(rssi) {
   return Math.max(1, Math.min(150, meters));
 }
 
+function rangeSigma(observation) {
+  const expectedRange = estimatedRangeFromRssi(observation.rssi);
+  return Math.max(5, expectedRange * 0.38, Number(observation.accuracy) || 10);
+}
+
 function observationWeight(observation, newestTimestamp) {
   const ageSeconds = Math.max(0, (newestTimestamp - observation.timestamp) / 1000);
-  const recency = Math.exp(-ageSeconds / 180);
+  const recency = Math.exp(-ageSeconds / 300);
   const gps = 1 / Math.max(4, Number(observation.accuracy) || 25);
   const signal = Math.max(0.2, Math.min(1, (Number(observation.rssi) + 100) / 55));
   return recency * gps * signal;
@@ -207,49 +214,88 @@ function weightedObservationCenter(observations) {
   };
 }
 
-function weakEstimate(observations, center, spatialSpread) {
+function observationSpread(observations) {
+  if (observations.length < 2) return 0;
+  let maxDistance = 0;
+  for (let i = 0; i < observations.length; i += 1) {
+    for (let j = i + 1; j < observations.length; j += 1) {
+      maxDistance = Math.max(
+        maxDistance,
+        distanceMeters(
+          observations[i].latitude,
+          observations[i].longitude,
+          observations[j].latitude,
+          observations[j].longitude
+        )
+      );
+    }
+  }
+  return maxDistance;
+}
+
+function ringPoints(latitude, longitude, radius, segments = 72) {
+  const points = [];
+  for (let i = 0; i < segments; i += 1) {
+    const angle = (i / segments) * Math.PI * 2;
+    points.push(offsetLatLng(
+      latitude,
+      longitude,
+      Math.cos(angle) * radius,
+      Math.sin(angle) * radius
+    ));
+  }
+  return points.map(point => [point.lat, point.lng]);
+}
+
+function unresolvedCloud(observations) {
   const newest = Math.max(...observations.map(o => o.timestamp));
   let rangeTotal = 0;
-  let accuracyTotal = 0;
+  let sigmaTotal = 0;
   let weightTotal = 0;
+  let latitude = 0;
+  let longitude = 0;
 
   observations.forEach(observation => {
     const weight = observationWeight(observation, newest);
     rangeTotal += estimatedRangeFromRssi(observation.rssi) * weight;
-    accuracyTotal += (Number(observation.accuracy) || 25) * weight;
+    sigmaTotal += rangeSigma(observation) * weight;
+    latitude += observation.latitude * weight;
+    longitude += observation.longitude * weight;
     weightTotal += weight;
   });
 
-  const meanRange = weightTotal ? rangeTotal / weightTotal : 50;
-  const meanAccuracy = weightTotal ? accuracyTotal / weightTotal : 25;
-  const countConfidence = Math.min(1, observations.length / 8);
-  const geometryConfidence = Math.min(1, spatialSpread / 35);
-  const confidence = Math.max(0.08, Math.min(0.32, 0.08 + countConfidence * 0.12 + geometryConfidence * 0.12));
+  const last = observations[observations.length - 1];
+  const centerLat = weightTotal ? latitude / weightTotal : last.latitude;
+  const centerLng = weightTotal ? longitude / weightTotal : last.longitude;
+  const expectedRange = weightTotal ? rangeTotal / weightTotal : estimatedRangeFromRssi(last.rssi);
+  const sigma = weightTotal ? sigmaTotal / weightTotal : rangeSigma(last);
+  const halfWidth = Math.max(6, sigma * 1.35);
 
   return {
-    latitude: center.latitude,
-    longitude: center.longitude,
-    uncertainty: Math.max(18, Math.min(180, meanRange + meanAccuracy)),
-    confidence
+    mode: 'annulus',
+    centerLat,
+    centerLng,
+    innerRadius: Math.max(1, expectedRange - halfWidth),
+    outerRadius: Math.max(4, expectedRange + halfWidth),
+    confidence: Math.max(0.08, Math.min(0.28, 0.08 + observations.length * 0.025))
   };
 }
 
-function solveRouterEstimate(observations) {
-  if (!observations.length) return null;
-
+function candidateCloud(observations) {
   const center = weightedObservationCenter(observations);
   const newest = Math.max(...observations.map(o => o.timestamp));
-  const spatialSpread = observations.length > 1
-    ? Math.max(...observations.map(o => distanceMeters(center.latitude, center.longitude, o.latitude, o.longitude)))
-    : 0;
-
-  if (observations.length < 3 || spatialSpread < 8) {
-    return weakEstimate(observations, center, spatialSpread);
-  }
+  const spread = observationSpread(observations);
+  const maxExpectedRange = Math.max(...observations.map(o => estimatedRangeFromRssi(o.rssi)));
+  const solverRadius = Math.min(
+    MAX_SOLVER_RADIUS_METERS,
+    Math.max(60, maxExpectedRange + spread * 0.65 + 24)
+  );
 
   const candidates = [];
-  for (let north = -SOLVER_RADIUS_METERS; north <= SOLVER_RADIUS_METERS; north += SOLVER_STEP_METERS) {
-    for (let east = -SOLVER_RADIUS_METERS; east <= SOLVER_RADIUS_METERS; east += SOLVER_STEP_METERS) {
+  let maxScore = -Infinity;
+
+  for (let north = -solverRadius, iy = 0; north <= solverRadius; north += SOLVER_STEP_METERS, iy += 1) {
+    for (let east = -solverRadius, ix = 0; east <= solverRadius; east += SOLVER_STEP_METERS, ix += 1) {
       const candidate = offsetLatLng(center.latitude, center.longitude, east, north);
       let logLikelihood = 0;
       let totalWeight = 0;
@@ -262,70 +308,155 @@ function solveRouterEstimate(observations) {
           candidate.lat,
           candidate.lng
         );
-        const sigma = Math.max(8, expectedRange * 0.42, Number(observation.accuracy) || 10);
+        const sigma = rangeSigma(observation);
         const residual = actualRange - expectedRange;
         const weight = observationWeight(observation, newest);
         logLikelihood += weight * -0.5 * Math.pow(residual / sigma, 2);
         totalWeight += weight;
       });
 
+      const score = totalWeight ? logLikelihood / totalWeight : -Infinity;
+      maxScore = Math.max(maxScore, score);
       candidates.push({
         lat: candidate.lat,
         lng: candidate.lng,
-        score: totalWeight ? logLikelihood / totalWeight : -Infinity
+        east,
+        north,
+        ix,
+        iy,
+        score,
+        probability: 0
       });
     }
   }
 
-  candidates.sort((a, b) => b.score - a.score);
-  const peak = candidates[0];
-  const maxScore = peak.score;
   let probabilityTotal = 0;
-  let spreadTotal = 0;
-
   candidates.forEach(candidate => {
-    const probability = Number.isFinite(candidate.score) ? Math.exp(candidate.score - maxScore) : 0;
-    candidate.probability = probability;
-    probabilityTotal += probability;
-    spreadTotal += probability * Math.pow(
-      distanceMeters(peak.lat, peak.lng, candidate.lat, candidate.lng),
-      2
-    );
+    candidate.probability = Number.isFinite(candidate.score)
+      ? Math.exp(candidate.score - maxScore)
+      : 0;
+    probabilityTotal += candidate.probability;
   });
 
-  const rmsSpread = probabilityTotal ? Math.sqrt(spreadTotal / probabilityTotal) : SOLVER_RADIUS_METERS;
-  const uncertainty = Math.max(6, Math.min(160, rmsSpread));
-  const countConfidence = Math.min(1, observations.length / 10);
-  const geometryConfidence = Math.min(1, spatialSpread / 45);
-  const concentrationConfidence = Math.max(0, Math.min(1, 1 - uncertainty / SOLVER_RADIUS_METERS));
+  if (!probabilityTotal) return null;
+
+  candidates.forEach(candidate => {
+    candidate.probability /= probabilityTotal;
+  });
+  candidates.sort((a, b) => b.probability - a.probability);
+
+  let rmsTotal = 0;
+  let meanEast = 0;
+  let meanNorth = 0;
+  candidates.forEach(candidate => {
+    meanEast += candidate.east * candidate.probability;
+    meanNorth += candidate.north * candidate.probability;
+  });
+  candidates.forEach(candidate => {
+    const dx = candidate.east - meanEast;
+    const dy = candidate.north - meanNorth;
+    rmsTotal += candidate.probability * ((dx * dx) + (dy * dy));
+  });
+
+  const rmsSpread = Math.sqrt(rmsTotal);
+  const countConfidence = Math.min(1, observations.length / 12);
+  const geometryConfidence = Math.min(1, spread / 45);
+  const concentrationConfidence = Math.max(0, Math.min(1, 1 - rmsSpread / solverRadius));
   const confidence = Math.max(
-    0.15,
-    Math.min(1, 0.18 + countConfidence * 0.28 + geometryConfidence * 0.28 + concentrationConfidence * 0.26)
+    0.14,
+    Math.min(1, 0.12 + countConfidence * 0.25 + geometryConfidence * 0.38 + concentrationConfidence * 0.25)
   );
 
   return {
-    latitude: peak.lat,
-    longitude: peak.lng,
-    uncertainty,
-    confidence
+    mode: 'field',
+    center,
+    candidates,
+    confidence,
+    solverRadius
   };
 }
 
-function stabilizeEstimate(previous, next) {
-  if (!previous) return next;
+function solveRouterCloud(observations) {
+  if (!observations.length) return null;
+  const spread = observationSpread(observations);
+  if (spread < 5) return unresolvedCloud(observations);
+  return candidateCloud(observations) || unresolvedCloud(observations);
+}
 
-  const movement = distanceMeters(previous.latitude, previous.longitude, next.latitude, next.longitude);
-  const meaningfulShift = movement > Math.max(4, previous.uncertainty * 0.15);
-  const alpha = meaningfulShift
-    ? 0.3 + next.confidence * 0.5
-    : 0.18 + next.confidence * 0.25;
+function selectedMassCells(candidates, targetMass) {
+  const selected = [];
+  let mass = 0;
+  for (const candidate of candidates) {
+    selected.push(candidate);
+    mass += candidate.probability;
+    if (mass >= targetMass) break;
+  }
+  return selected;
+}
 
-  return {
-    latitude: previous.latitude + (next.latitude - previous.latitude) * alpha,
-    longitude: previous.longitude + (next.longitude - previous.longitude) * alpha,
-    uncertainty: previous.uncertainty + (next.uncertainty - previous.uncertainty) * alpha,
-    confidence: previous.confidence + (next.confidence - previous.confidence) * alpha
-  };
+function clusterCells(cells) {
+  const byKey = new Map(cells.map(cell => [`${cell.ix},${cell.iy}`, cell]));
+  const visited = new Set();
+  const clusters = [];
+
+  cells.forEach(cell => {
+    const startKey = `${cell.ix},${cell.iy}`;
+    if (visited.has(startKey)) return;
+
+    const cluster = [];
+    const queue = [cell];
+    visited.add(startKey);
+
+    while (queue.length) {
+      const current = queue.pop();
+      cluster.push(current);
+
+      for (let dx = -1; dx <= 1; dx += 1) {
+        for (let dy = -1; dy <= 1; dy += 1) {
+          if (dx === 0 && dy === 0) continue;
+          const key = `${current.ix + dx},${current.iy + dy}`;
+          if (!visited.has(key) && byKey.has(key)) {
+            visited.add(key);
+            queue.push(byKey.get(key));
+          }
+        }
+      }
+    }
+
+    clusters.push(cluster);
+  });
+
+  return clusters;
+}
+
+function cross(o, a, b) {
+  return (a.east - o.east) * (b.north - o.north) -
+    (a.north - o.north) * (b.east - o.east);
+}
+
+function convexHull(points) {
+  if (points.length <= 2) return points.slice();
+  const sorted = points.slice().sort((a, b) => a.east - b.east || a.north - b.north);
+  const lower = [];
+  sorted.forEach(point => {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], point) <= 0) {
+      lower.pop();
+    }
+    lower.push(point);
+  });
+
+  const upper = [];
+  for (let i = sorted.length - 1; i >= 0; i -= 1) {
+    const point = sorted[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], point) <= 0) {
+      upper.pop();
+    }
+    upper.push(point);
+  }
+
+  lower.pop();
+  upper.pop();
+  return lower.concat(upper);
 }
 
 function clearRouterLayer(router) {
@@ -336,58 +467,77 @@ function clearRouterLayer(router) {
   router.visualLayers = [];
 }
 
-function renderRouter(router) {
-  const solved = solveRouterEstimate(router.observations);
-  if (!solved) return;
-
-  router.estimate = stabilizeEstimate(router.estimate, solved);
-  router.confidence = router.estimate.confidence;
-  clearRouterLayer(router);
-
-  const estimate = router.estimate;
-  const center = [estimate.latitude, estimate.longitude];
-  const confidence = estimate.confidence;
-  const outerOpacity = 0.025 + confidence * 0.055;
-  const middleOpacity = 0.04 + confidence * 0.09;
-  const coreOpacity = 0.055 + confidence * 0.15;
-  const layers = [];
-
-  layers.push(L.circle(center, {
+function addAnnulusLayers(layers, cloud) {
+  const outer = ringPoints(cloud.centerLat, cloud.centerLng, cloud.outerRadius);
+  const inner = ringPoints(cloud.centerLat, cloud.centerLng, cloud.innerRadius).reverse();
+  layers.push(L.polygon([outer, inner], {
     pane: 'wifiClouds',
-    radius: estimate.uncertainty,
     stroke: false,
     fillColor: '#78b4ff',
-    fillOpacity: outerOpacity,
+    fillOpacity: 0.09 + cloud.confidence * 0.12,
+    fillRule: 'evenodd',
     interactive: false
   }));
+}
 
-  layers.push(L.circle(center, {
-    pane: 'wifiClouds',
-    radius: Math.max(3, estimate.uncertainty * 0.62),
-    stroke: false,
-    fillColor: '#78b4ff',
-    fillOpacity: middleOpacity,
-    interactive: false
-  }));
+function addFieldMassLayers(layers, field, targetMass, opacity) {
+  const selected = selectedMassCells(field.candidates, targetMass);
+  const clusters = clusterCells(selected);
 
-  layers.push(L.circle(center, {
-    pane: 'wifiClouds',
-    radius: Math.max(2, estimate.uncertainty * 0.3),
-    stroke: false,
-    fillColor: '#78b4ff',
-    fillOpacity: coreOpacity,
-    interactive: false
-  }));
+  clusters.forEach(cluster => {
+    if (cluster.length < 3) {
+      cluster.forEach(cell => {
+        layers.push(L.circle([cell.lat, cell.lng], {
+          pane: 'wifiClouds',
+          radius: SOLVER_STEP_METERS * 0.9,
+          stroke: false,
+          fillColor: '#78b4ff',
+          fillOpacity: opacity,
+          interactive: false
+        }));
+      });
+      return;
+    }
 
-  if (confidence >= 0.35) {
-    layers.push(L.circleMarker(center, {
+    const hull = convexHull(cluster);
+    if (hull.length < 3) return;
+    layers.push(L.polygon(hull.map(cell => [cell.lat, cell.lng]), {
       pane: 'wifiClouds',
-      radius: 2.5 + confidence * 2.5,
       stroke: false,
-      fillColor: '#b9d8ff',
-      fillOpacity: 0.35 + confidence * 0.55,
+      fillColor: '#78b4ff',
+      fillOpacity: opacity,
+      smoothFactor: 1.4,
       interactive: false
     }));
+  });
+}
+
+function renderRouter(router) {
+  const cloud = solveRouterCloud(router.observations);
+  if (!cloud) return;
+
+  router.cloud = cloud;
+  router.confidence = cloud.confidence;
+  clearRouterLayer(router);
+
+  const layers = [];
+  if (cloud.mode === 'annulus') {
+    addAnnulusLayers(layers, cloud);
+  } else {
+    addFieldMassLayers(layers, cloud, OUTER_CLOUD_MASS, 0.055 + cloud.confidence * 0.09);
+    addFieldMassLayers(layers, cloud, INNER_CLOUD_MASS, 0.10 + cloud.confidence * 0.18);
+
+    if (cloud.confidence >= 0.68 && cloud.candidates.length) {
+      const best = cloud.candidates[0];
+      layers.push(L.circleMarker([best.lat, best.lng], {
+        pane: 'wifiClouds',
+        radius: 2.5 + cloud.confidence * 2,
+        stroke: false,
+        fillColor: '#c8e1ff',
+        fillOpacity: 0.35 + cloud.confidence * 0.5,
+        interactive: false
+      }));
+    }
   }
 
   router.visualLayers = layers;
@@ -425,7 +575,7 @@ function ingestWifiScan(observations) {
         bssid,
         ssid: String(raw.ssid || ''),
         observations: [],
-        estimate: null,
+        cloud: null,
         confidence: 0,
         layer: null,
         visualLayers: []
