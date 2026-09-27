@@ -9,11 +9,26 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <div id="map"></div>
-  <div id="hud">
-    <div id="status">Finding location</div>
-    <div id="range">100 m</div>
-  </div>
+  <main id="app">
+    <section id="viewPane">
+      <div id="map"></div>
+      <div id="threeDView" aria-hidden="true"></div>
+    </section>
+
+    <section id="controls">
+      <div id="controlStatus">
+        <div id="status">Finding location</div>
+        <div id="range">100 m radius</div>
+      </div>
+
+      <button id="modeToggle" type="button" aria-pressed="false">
+        <span id="mode3d">3D</span>
+        <span class="mode-divider">/</span>
+        <span id="mode2d" class="active">2D</span>
+      </button>
+    </section>
+  </main>
+
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="app.js"></script>
 </body>
