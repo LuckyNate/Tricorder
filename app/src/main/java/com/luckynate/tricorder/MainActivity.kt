@@ -53,13 +53,14 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     private val locationHistory = ArrayDeque<Location>()
     private val headingHistory = ArrayDeque<HeadingSample>()
     private var wifiReceiverRegistered = false
-    private var updateCheckStarted = false
+    private var lastUpdateCheckAt = 0L
 
     companion object {
         private const val SENSOR_PERMISSION_REQUEST = 1001
         private const val SENSOR_FRAME_INTERVAL_MS = 33L
         private const val MAX_LOCATION_HISTORY = 128
         private const val MAX_HEADING_HISTORY = 256
+        private const val UPDATE_CHECK_THROTTLE_MS = 30_000L
         private const val UPDATE_API_URL = "https://api.github.com/repos/LuckyNate/Tricorder/releases/tags/latest"
         private val RELEASE_VERSION_CODE_PATTERN = Regex("(?m)^versionCode=(\\d+)\\s*$")
     }
@@ -106,7 +107,6 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         bluetoothScanner = BluetoothScanner(applicationContext)
         requestSensorPermissions()
-        checkForUpdatesOnce()
     }
 
     private fun requestSensorPermissions() {
@@ -387,9 +387,10 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         runOnUiThread { webView.evaluateJavascript(script, null) }
     }
 
-    private fun checkForUpdatesOnce() {
-        if (updateCheckStarted) return
-        updateCheckStarted = true
+    private fun checkForUpdates() {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastUpdateCheckAt < UPDATE_CHECK_THROTTLE_MS) return
+        lastUpdateCheckAt = now
 
         Thread {
             try {
@@ -465,6 +466,7 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
 
     override fun onResume() {
         super.onResume()
+        checkForUpdates()
         if (
             ::locationManager.isInitialized &&
             ::wifiManager.isInitialized &&
