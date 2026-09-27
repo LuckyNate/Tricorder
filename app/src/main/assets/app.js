@@ -7,6 +7,7 @@ const RSSI_AT_ONE_METER = -45;
 const PATH_LOSS_EXPONENT = 2.6;
 const OUTER_CLOUD_MASS = 0.82;
 const INNER_CLOUD_MASS = 0.48;
+const RENDER_INTERVAL_MS = 1000 / 30;
 
 const statusEl = document.getElementById('status');
 const rangeEl = document.getElementById('range');
@@ -49,8 +50,10 @@ let hasInitialFix = false;
 let deviceLocation = null;
 let currentMode = '2d';
 let currentRangeMeters = RANGE_OPTIONS[0];
+let lastRenderTime = 0;
 
 const routers = new Map();
+const dirtyRouters = new Set();
 
 function rangeLabel(meters) {
   return meters >= 1000
@@ -179,7 +182,8 @@ function estimatedRangeFromRssi(rssi) {
 
 function rangeSigma(observation) {
   const expectedRange = estimatedRangeFromRssi(observation.rssi);
-  return Math.max(5, expectedRange * 0.38, Number(observation.accuracy) || 10);
+  const gpsContribution = Math.min(10, (Number(observation.accuracy) || 10) * 0.3);
+  return Math.max(2.5, expectedRange * 0.26, gpsContribution);
 }
 
 function observationWeight(observation, newestTimestamp) {
@@ -269,14 +273,14 @@ function unresolvedCloud(observations) {
   const centerLng = weightTotal ? longitude / weightTotal : last.longitude;
   const expectedRange = weightTotal ? rangeTotal / weightTotal : estimatedRangeFromRssi(last.rssi);
   const sigma = weightTotal ? sigmaTotal / weightTotal : rangeSigma(last);
-  const halfWidth = Math.max(6, sigma * 1.35);
+  const halfWidth = Math.max(2.5, sigma * 1.1);
 
   return {
     mode: 'annulus',
     centerLat,
     centerLng,
-    innerRadius: Math.max(1, expectedRange - halfWidth),
-    outerRadius: Math.max(4, expectedRange + halfWidth),
+    innerRadius: Math.max(0.75, expectedRange - halfWidth),
+    outerRadius: Math.max(2.5, expectedRange + halfWidth),
     confidence: Math.max(0.08, Math.min(0.28, 0.08 + observations.length * 0.025))
   };
 }
@@ -474,7 +478,7 @@ function addAnnulusLayers(layers, cloud) {
     pane: 'wifiClouds',
     stroke: false,
     fillColor: '#78b4ff',
-    fillOpacity: 0.09 + cloud.confidence * 0.12,
+    fillOpacity: 0.045 + cloud.confidence * 0.075,
     fillRule: 'evenodd',
     interactive: false
   }));
@@ -555,10 +559,18 @@ function orderRouterLayers() {
     });
 }
 
-function renderAllRouters() {
-  routers.forEach(router => {
-    if (router.observations.length) renderRouter(router);
+function scannerFrame(timestamp) {
+  requestAnimationFrame(scannerFrame);
+  if (timestamp - lastRenderTime < RENDER_INTERVAL_MS) return;
+  lastRenderTime = timestamp;
+
+  if (!dirtyRouters.size) return;
+
+  dirtyRouters.forEach(bssid => {
+    const router = routers.get(bssid);
+    if (router?.observations.length) renderRouter(router);
   });
+  dirtyRouters.clear();
   orderRouterLayers();
 }
 
@@ -567,7 +579,8 @@ function ingestWifiScan(observations) {
 
   observations.forEach(raw => {
     const bssid = String(raw.bssid || '').toLowerCase();
-    if (!bssid) return;
+    const timestamp = Number(raw.timestamp);
+    if (!bssid || !Number.isFinite(timestamp)) return;
 
     let router = routers.get(bssid);
     if (!router) {
@@ -578,18 +591,21 @@ function ingestWifiScan(observations) {
         cloud: null,
         confidence: 0,
         layer: null,
-        visualLayers: []
+        visualLayers: [],
+        lastObservationTimestamp: -Infinity
       };
       routers.set(bssid, router);
     }
 
+    if (timestamp <= router.lastObservationTimestamp) return;
+    router.lastObservationTimestamp = timestamp;
     router.ssid = String(raw.ssid || router.ssid || '');
     router.observations.push({
       bssid,
       ssid: router.ssid,
       rssi: Number(raw.rssi),
       frequency: Number(raw.frequency),
-      timestamp: Number(raw.timestamp) || Date.now(),
+      timestamp,
       latitude: Number(raw.latitude),
       longitude: Number(raw.longitude),
       accuracy: Number(raw.accuracy) || 25
@@ -598,17 +614,18 @@ function ingestWifiScan(observations) {
     if (router.observations.length > MAX_OBSERVATIONS_PER_ROUTER) {
       router.observations.splice(0, router.observations.length - MAX_OBSERVATIONS_PER_ROUTER);
     }
+
+    dirtyRouters.add(bssid);
   });
 
-  renderAllRouters();
-
-  const visible = [...routers.values()].filter(router => router.layer).length;
+  const visible = [...routers.values()].filter(router => router.observations.length).length;
   if (visible) statusEl.textContent = `${visible} Wi-Fi targets`;
 }
 
 window.addEventListener('resize', () => requestAnimationFrame(refitRadar));
 
 setRange(currentRangeMeters);
+requestAnimationFrame(scannerFrame);
 
 window.Tricorder = {
   onLocation(latitude, longitude, accuracy) {
