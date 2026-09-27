@@ -1,0 +1,85 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.5.0'
+
+      - name: Bootstrap Gradle wrapper if missing
+        run: |
+          if [ ! -f gradlew ] || [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            gradle wrapper --gradle-version 9.5.0
+            chmod +x gradlew
+          fi
+
+      - name: Persist Gradle wrapper
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          if ! git diff --quiet -- gradlew gradlew.bat gradle/wrapper/gradle-wrapper.jar gradle/wrapper/gradle-wrapper.properties; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add gradlew gradlew.bat gradle/wrapper/gradle-wrapper.jar gradle/wrapper/gradle-wrapper.properties
+            git commit -m "Add Gradle wrapper"
+            git push
+          fi
+
+      - name: Build clean debug APK
+        run: ./gradlew clean :app:assembleDebug --no-build-cache
+
+      - name: Name iterative APK
+        run: |
+          VERSION="0.1.${GITHUB_RUN_NUMBER}"
+          cp app/build/outputs/apk/debug/app-debug.apk "Tricorder-${VERSION}.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk Tricorder-latest.apk
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tricorder-${{ env.VERSION }}
+          path: |
+            Tricorder-${{ env.VERSION }}.apk
+            Tricorder-latest.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create latest release if needed
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view latest >/dev/null 2>&1; then
+            gh release create latest --title "Tricorder — Latest Build" --notes "Automatically updated APK from main."
+          fi
+
+      - name: Replace latest APK and upload versioned APK
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload latest Tricorder-latest.apk --clobber
+          gh release upload latest "Tricorder-${VERSION}.apk" --clobber
