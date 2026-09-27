@@ -57,6 +57,21 @@ The native Android layer exposes device capabilities to the WebView. The first i
 
 See `docs/ARCHITECTURE.md` and `docs/TARGET_MODEL.md` for the current design.
 
+## Build and versioning
+
+GitHub Actions builds a clean debug APK on every push to `main`, pull request to `main`, and manual workflow run.
+
+Build versions are iterative and use the Actions run number:
+
+- `versionCode = GITHUB_RUN_NUMBER`
+- `versionName = 0.1.<GITHUB_RUN_NUMBER>`
+- versioned artifact: `Tricorder-0.1.<run>.apk`
+- rolling artifact: `Tricorder-latest.apk`
+
+Main-branch builds update the GitHub `latest` release with both APK names.
+
+The build workflow also bootstraps the Gradle 9.5.0 wrapper if it is missing and persists the generated wrapper files back to the repository. Subsequent CI and local builds use `./gradlew`.
+
 ## Current state
 
 Milestone zero is implemented:
@@ -67,6 +82,8 @@ Milestone zero is implemented:
 - OpenStreetMap/Leaflet map;
 - initial map framing around the phone at a 100 m radius;
 - phone position marker and accuracy ring;
-- automatic recentering as the phone moves.
+- automatic recentering as the phone moves;
+- iterative APK build/version workflow;
+- automatic latest-build release publishing.
 
 The next systems can now build on this live spatial base.
