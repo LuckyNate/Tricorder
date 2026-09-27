@@ -42,6 +42,7 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     private lateinit var locationManager: LocationManager
     private lateinit var wifiManager: WifiManager
     private lateinit var sensorManager: SensorManager
+    private lateinit var bluetoothScanner: BluetoothScanner
     private val handler = Handler(Looper.getMainLooper())
 
     private var latestLocation: Location? = null
@@ -79,6 +80,7 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
             updateMotionHeadingFallback()
             requestWifiScan()
             sendWifiResults()
+            sendBluetoothResults()
             latestLocation?.let(::sendLocation)
             sendHeading()
             handler.postDelayed(this, SENSOR_FRAME_INTERVAL_MS)
@@ -102,6 +104,7 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         locationManager = getSystemService(LOCATION_SERVICE) as LocationManager
         wifiManager = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
+        bluetoothScanner = BluetoothScanner(applicationContext)
         requestSensorPermissions()
         checkForUpdatesOnce()
     }
@@ -119,6 +122,12 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
             checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED
         ) {
             needed += Manifest.permission.NEARBY_WIFI_DEVICES
+        }
+        if (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
+            needed += Manifest.permission.BLUETOOTH_SCAN
+        }
+        if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+            needed += Manifest.permission.BLUETOOTH_CONNECT
         }
 
         if (needed.isNotEmpty()) {
@@ -147,6 +156,7 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         startLocationUpdates()
         startHeadingUpdates()
         startWifiScanning()
+        startBluetoothScanning()
         startSensorFrameLoop()
     }
 
@@ -158,6 +168,11 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     private fun hasWifiPermission(): Boolean {
         return Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
             checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun hasBluetoothPermission(): Boolean {
+        return checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
+            checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
     }
 
     private fun startLocationUpdates() {
@@ -307,6 +322,11 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         }
     }
 
+    private fun startBluetoothScanning() {
+        if (!hasBluetoothPermission()) return
+        bluetoothScanner.start()
+    }
+
     private fun startSensorFrameLoop() {
         handler.removeCallbacks(sensorFrameLoop)
         handler.post(sensorFrameLoop)
@@ -353,6 +373,18 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         } catch (_: SecurityException) {
             sendStatus("Wi-Fi scan permission unavailable")
         }
+    }
+
+    private fun sendBluetoothResults() {
+        if (!hasBluetoothPermission()) return
+        val observations = bluetoothScanner.frame(
+            latestLocation,
+            latestHeadingDegrees,
+            headingAccuracy,
+            headingSource
+        )
+        val script = "window.Tricorder && window.Tricorder.onBluetoothScan && window.Tricorder.onBluetoothScan($observations);"
+        runOnUiThread { webView.evaluateJavascript(script, null) }
     }
 
     private fun checkForUpdatesOnce() {
@@ -433,7 +465,12 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
 
     override fun onResume() {
         super.onResume()
-        if (::locationManager.isInitialized && ::wifiManager.isInitialized && ::sensorManager.isInitialized) {
+        if (
+            ::locationManager.isInitialized &&
+            ::wifiManager.isInitialized &&
+            ::sensorManager.isInitialized &&
+            ::bluetoothScanner.isInitialized
+        ) {
             requestSensorPermissions()
         }
     }
@@ -441,6 +478,9 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     override fun onPause() {
         super.onPause()
         handler.removeCallbacks(sensorFrameLoop)
+        if (::bluetoothScanner.isInitialized) {
+            bluetoothScanner.stop()
+        }
         if (::sensorManager.isInitialized) {
             sensorManager.unregisterListener(this)
         }
