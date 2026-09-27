@@ -6,6 +6,40 @@ if (!map.getPane('bluetoothClouds')) {
   map.getPane('bluetoothClouds').style.zIndex = 440;
 }
 
+WifiSensor.prototype.renderTarget = function renderTarget(target) {
+  if (!this.enabled) {
+    this.clearTargetLayer(target);
+    return;
+  }
+  const cloud = this.solveTarget(target);
+  if (!cloud) return;
+  target.cloud = cloud;
+  target.confidence = cloud.confidence;
+  this.clearTargetLayer(target);
+
+  const layers = [];
+  if (cloud.mode === 'annulus') {
+    this.addAnnulusLayers(layers, cloud);
+  } else {
+    this.addFieldMassLayers(layers, cloud, OUTER_CLOUD_MASS, 0.055 + cloud.confidence * 0.09);
+    this.addFieldMassLayers(layers, cloud, INNER_CLOUD_MASS, 0.10 + cloud.confidence * 0.18);
+    if (cloud.confidence >= 0.68 && cloud.candidates.length) {
+      const best = cloud.candidates[0];
+      layers.push(L.circleMarker([best.lat, best.lng], {
+        pane: this.paneName,
+        radius: 2.5 + cloud.confidence * 2,
+        stroke: false,
+        fillColor: this.color,
+        fillOpacity: 0.35 + cloud.confidence * 0.5,
+        interactive: false
+      }));
+    }
+  }
+
+  target.visualLayers = layers;
+  target.layer = L.layerGroup(layers).addTo(map);
+};
+
 class BluetoothSensor extends WifiSensor {
   constructor() {
     super();
