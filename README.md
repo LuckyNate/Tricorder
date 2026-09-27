@@ -53,10 +53,20 @@ The WebView owns:
 - target/status presentation;
 - mode switching.
 
-The native Android layer will expose device capabilities to the WebView, including location, heading/orientation, Bluetooth, Wi-Fi, camera, ranging technologies, and other sensors available on the device.
+The native Android layer exposes device capabilities to the WebView. The first implemented bridge is live location; heading/orientation, Bluetooth, Wi-Fi, camera, ranging technologies, and other available sensors follow the same pattern.
 
 See `docs/ARCHITECTURE.md` and `docs/TARGET_MODEL.md` for the current design.
 
 ## Current state
 
-The repository currently contains the first local WebView shell and the agreed architecture documentation. Native Android sensor bridges are not yet implemented.
+Milestone zero is implemented:
+
+- native Android local-WebView shell;
+- runtime coarse/fine location permission request;
+- live GPS/network location updates;
+- OpenStreetMap/Leaflet map;
+- initial map framing around the phone at a 100 m radius;
+- phone position marker and accuracy ring;
+- automatic recentering as the phone moves.
+
+The next systems can now build on this live spatial base.
