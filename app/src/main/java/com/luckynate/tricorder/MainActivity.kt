@@ -7,6 +7,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
@@ -25,14 +29,19 @@ import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import kotlin.math.PI
 
-class MainActivity : Activity(), LocationListener {
+class MainActivity : Activity(), LocationListener, SensorEventListener {
     private lateinit var webView: WebView
     private lateinit var locationManager: LocationManager
     private lateinit var wifiManager: WifiManager
+    private lateinit var sensorManager: SensorManager
     private val handler = Handler(Looper.getMainLooper())
 
     private var latestLocation: Location? = null
+    private var latestHeadingDegrees: Float? = null
+    private var headingAccuracy = SensorManager.SENSOR_STATUS_UNRELIABLE
+    private var headingSource = "none"
     private var wifiReceiverRegistered = false
     private var updateCheckStarted = false
     private var pendingUpdateFile: File? = null
@@ -57,8 +66,10 @@ class MainActivity : Activity(), LocationListener {
     private val sensorFrameLoop = object : Runnable {
         override fun run() {
             sampleLocationFrame()
+            updateMotionHeadingFallback()
             requestWifiScan()
             latestLocation?.let(::sendLocation)
+            sendHeading()
             handler.postDelayed(this, SENSOR_FRAME_INTERVAL_MS)
         }
     }
@@ -79,6 +90,7 @@ class MainActivity : Activity(), LocationListener {
 
         locationManager = getSystemService(LOCATION_SERVICE) as LocationManager
         wifiManager = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
+        sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         requestSensorPermissions()
         checkForUpdatesOnce()
     }
@@ -122,6 +134,7 @@ class MainActivity : Activity(), LocationListener {
 
     private fun startSensors() {
         startLocationUpdates()
+        startHeadingUpdates()
         startWifiScanning()
         startSensorFrameLoop()
     }
@@ -152,6 +165,35 @@ class MainActivity : Activity(), LocationListener {
         }
     }
 
+    private fun startHeadingUpdates() {
+        sensorManager.unregisterListener(this)
+        val rotationVector = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
+        if (rotationVector != null) {
+            sensorManager.registerListener(this, rotationVector, SensorManager.SENSOR_DELAY_GAME)
+        }
+    }
+
+    override fun onSensorChanged(event: SensorEvent?) {
+        if (event?.sensor?.type != Sensor.TYPE_ROTATION_VECTOR) return
+
+        val rotation = FloatArray(9)
+        val orientation = FloatArray(3)
+        SensorManager.getRotationMatrixFromVector(rotation, event.values)
+        SensorManager.getOrientation(rotation, orientation)
+
+        var heading = (orientation[0] * 180f / PI.toFloat())
+        if (heading < 0f) heading += 360f
+
+        latestHeadingDegrees = heading
+        headingSource = "orientation"
+    }
+
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
+        if (sensor?.type == Sensor.TYPE_ROTATION_VECTOR) {
+            headingAccuracy = accuracy
+        }
+    }
+
     private fun sampleLocationFrame() {
         if (!hasLocationPermission()) return
 
@@ -167,6 +209,16 @@ class MainActivity : Activity(), LocationListener {
                 }
             } catch (_: Exception) {
             }
+        }
+    }
+
+    private fun updateMotionHeadingFallback() {
+        if (headingSource == "orientation" && latestHeadingDegrees != null) return
+        val location = latestLocation ?: return
+        if (location.hasBearing() && location.speed >= 0.5f) {
+            latestHeadingDegrees = ((location.bearing % 360f) + 360f) % 360f
+            headingAccuracy = SensorManager.SENSOR_STATUS_ACCURACY_MEDIUM
+            headingSource = "motion"
         }
     }
 
@@ -231,6 +283,9 @@ class MainActivity : Activity(), LocationListener {
                     put("latitude", location.latitude)
                     put("longitude", location.longitude)
                     put("accuracy", location.accuracy)
+                    latestHeadingDegrees?.let { put("heading", it) }
+                    put("headingSource", headingSource)
+                    put("headingAccuracy", headingAccuracy)
                 })
             }
 
@@ -349,7 +404,16 @@ class MainActivity : Activity(), LocationListener {
     }
 
     private fun sendLocation(location: Location) {
-        val script = "window.Tricorder && window.Tricorder.onLocation(${location.latitude},${location.longitude},${location.accuracy});"
+        val bearing = if (location.hasBearing()) location.bearing else Float.NaN
+        val speed = if (location.hasSpeed()) location.speed else 0f
+        val script = "window.Tricorder && window.Tricorder.onLocation(${location.latitude},${location.longitude},${location.accuracy},$bearing,$speed);"
+        runOnUiThread { webView.evaluateJavascript(script, null) }
+    }
+
+    private fun sendHeading() {
+        val heading = latestHeadingDegrees ?: return
+        val source = headingSource.replace("\\", "\\\\").replace("'", "\\'")
+        val script = "window.Tricorder && window.Tricorder.onHeading($heading,$headingAccuracy,'$source');"
         runOnUiThread { webView.evaluateJavascript(script, null) }
     }
 
@@ -369,12 +433,17 @@ class MainActivity : Activity(), LocationListener {
             }
         }
 
-        if (::locationManager.isInitialized && ::wifiManager.isInitialized) requestSensorPermissions()
+        if (::locationManager.isInitialized && ::wifiManager.isInitialized && ::sensorManager.isInitialized) {
+            requestSensorPermissions()
+        }
     }
 
     override fun onPause() {
         super.onPause()
         handler.removeCallbacks(sensorFrameLoop)
+        if (::sensorManager.isInitialized) {
+            sensorManager.unregisterListener(this)
+        }
         if (::locationManager.isInitialized) {
             try {
                 locationManager.removeUpdates(this)
