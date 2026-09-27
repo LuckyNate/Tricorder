@@ -39,7 +39,7 @@ class MainActivity : Activity(), LocationListener {
 
     companion object {
         private const val SENSOR_PERMISSION_REQUEST = 1001
-        private const val WIFI_SCAN_INTERVAL_MS = 1_000L
+        private const val SENSOR_FRAME_INTERVAL_MS = 33L
         private const val UPDATE_API_URL = "https://api.github.com/repos/LuckyNate/Tricorder/releases/tags/latest"
         private val RELEASE_VERSION_CODE_PATTERN = Regex("(?m)^versionCode=(\\d+)\\s*$")
     }
@@ -54,10 +54,12 @@ class MainActivity : Activity(), LocationListener {
         }
     }
 
-    private val wifiScanLoop = object : Runnable {
+    private val sensorFrameLoop = object : Runnable {
         override fun run() {
+            sampleLocationFrame()
             requestWifiScan()
-            handler.postDelayed(this, WIFI_SCAN_INTERVAL_MS)
+            latestLocation?.let(::sendLocation)
+            handler.postDelayed(this, SENSOR_FRAME_INTERVAL_MS)
         }
     }
 
@@ -121,6 +123,7 @@ class MainActivity : Activity(), LocationListener {
     private fun startSensors() {
         startLocationUpdates()
         startWifiScanning()
+        startSensorFrameLoop()
     }
 
     private fun hasLocationPermission(): Boolean {
@@ -142,7 +145,25 @@ class MainActivity : Activity(), LocationListener {
             try {
                 if (locationManager.isProviderEnabled(provider)) {
                     locationManager.getLastKnownLocation(provider)?.let(::handleLocation)
-                    locationManager.requestLocationUpdates(provider, 1000L, 1f, this)
+                    locationManager.requestLocationUpdates(provider, 0L, 0f, this)
+                }
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun sampleLocationFrame() {
+        if (!hasLocationPermission()) return
+
+        listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER).forEach { provider ->
+            try {
+                if (locationManager.isProviderEnabled(provider)) {
+                    locationManager.getLastKnownLocation(provider)?.let { location ->
+                        val current = latestLocation
+                        if (current == null || location.elapsedRealtimeNanos >= current.elapsedRealtimeNanos) {
+                            latestLocation = location
+                        }
+                    }
                 }
             } catch (_: Exception) {
             }
@@ -151,7 +172,6 @@ class MainActivity : Activity(), LocationListener {
 
     private fun handleLocation(location: Location) {
         latestLocation = location
-        sendLocation(location)
     }
 
     override fun onLocationChanged(location: Location) {
@@ -179,9 +199,11 @@ class MainActivity : Activity(), LocationListener {
             }
             wifiReceiverRegistered = true
         }
+    }
 
-        handler.removeCallbacks(wifiScanLoop)
-        handler.post(wifiScanLoop)
+    private fun startSensorFrameLoop() {
+        handler.removeCallbacks(sensorFrameLoop)
+        handler.post(sensorFrameLoop)
     }
 
     private fun requestWifiScan() {
@@ -352,7 +374,7 @@ class MainActivity : Activity(), LocationListener {
 
     override fun onPause() {
         super.onPause()
-        handler.removeCallbacks(wifiScanLoop)
+        handler.removeCallbacks(sensorFrameLoop)
         if (::locationManager.isInitialized) {
             try {
                 locationManager.removeUpdates(this)
