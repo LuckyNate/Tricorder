@@ -63,6 +63,25 @@ OpenStreetMap supplies map geometry. The phone's own location and orientation se
 
 The UI therefore remains a live projection of current target state rather than a history of disconnected detections.
 
+## Wi-Fi localization layer
+
+Each Wi-Fi access point is a persistent target keyed by BSSID.
+
+A Wi-Fi observation contains the current phone position and accuracy together with BSSID, SSID, RSSI, frequency, and timestamp.
+
+The first implementation is deterministic. RSSI is converted into an approximate range, and candidate positions around the observation history are scored against all recent measurements. The output is a **2D probability field**, not a single router coordinate.
+
+That field is rendered directly as a probability cloud:
+
+- higher-probability regions are more opaque;
+- lower-probability tails remain faint;
+- each BSSID owns its own cloud layer;
+- stronger overall target confidence raises that entire layer in the stack;
+- new observations can shift, tighten, or broaden the cloud;
+- multiple observations taken from different phone positions should cause overlapping likelihood regions to converge naturally.
+
+The current implementation keeps a bounded recent observation history per BSSID and recomputes the cloud from that history. This provides a transparent baseline before adding more advanced ranging or learning systems.
+
 ## Modes
 
 ### Radar mode
