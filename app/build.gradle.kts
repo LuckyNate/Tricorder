@@ -15,6 +15,10 @@ android {
         versionCode = ciBuildNumber ?: 1
         versionName = if (ciBuildNumber != null) "0.1.$ciBuildNumber" else "0.1.0"
     }
+
+    buildFeatures {
+        buildConfig = true
+    }
 }
 
 dependencies {
