@@ -14,20 +14,16 @@ import android.hardware.SensorManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
-import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.provider.Settings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import androidx.core.content.FileProvider
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.ArrayDeque
@@ -57,7 +53,6 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     private val headingHistory = ArrayDeque<HeadingSample>()
     private var wifiReceiverRegistered = false
     private var updateCheckStarted = false
-    private var pendingUpdateFile: File? = null
 
     companion object {
         private const val SENSOR_PERMISSION_REQUEST = 1001
@@ -386,85 +381,13 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
                     ?.toIntOrNull()
                     ?: BuildConfig.VERSION_CODE
 
-                val assets = release.getJSONArray("assets")
-                var latestDownloadUrl: String? = null
-
-                for (index in 0 until assets.length()) {
-                    val asset = assets.getJSONObject(index)
-                    if (asset.optString("name") == "Tricorder-latest.apk") {
-                        latestDownloadUrl = asset.optString("browser_download_url")
-                        break
-                    }
-                }
-
-                if (newestVersionCode > BuildConfig.VERSION_CODE && !latestDownloadUrl.isNullOrBlank()) {
-                    sendStatus("Update 0.1.$newestVersionCode found")
-                    downloadUpdate(latestDownloadUrl!!, newestVersionCode)
+                if (newestVersionCode > BuildConfig.VERSION_CODE) {
+                    sendStatus("Update 0.1.$newestVersionCode available")
                 }
             } catch (_: Exception) {
                 // Updating is opportunistic; sensor operation continues normally if GitHub is unavailable.
             }
         }.start()
-    }
-
-    private fun downloadUpdate(downloadUrl: String, versionCode: Int) {
-        try {
-            sendStatus("Downloading update 0.1.$versionCode")
-            val updateDir = File(cacheDir, "updates").apply { mkdirs() }
-            val apkFile = File(updateDir, "Tricorder-update.apk")
-
-            val connection = (URL(downloadUrl).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 10_000
-                readTimeout = 30_000
-                instanceFollowRedirects = true
-                setRequestProperty("User-Agent", "Tricorder/${BuildConfig.VERSION_NAME}")
-            }
-
-            connection.inputStream.use { input ->
-                apkFile.outputStream().use { output -> input.copyTo(output) }
-            }
-            connection.disconnect()
-
-            runOnUiThread { beginUpdateInstall(apkFile) }
-        } catch (_: Exception) {
-            sendStatus("Update download failed")
-        }
-    }
-
-    private fun beginUpdateInstall(apkFile: File) {
-        if (!apkFile.exists()) return
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
-            pendingUpdateFile = apkFile
-            sendStatus("Allow Tricorder to install updates")
-            startActivity(
-                Intent(
-                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                    Uri.parse("package:$packageName")
-                )
-            )
-            return
-        }
-
-        launchPackageInstaller(apkFile)
-    }
-
-    private fun launchPackageInstaller(apkFile: File) {
-        try {
-            val uri = FileProvider.getUriForFile(
-                this,
-                "$packageName.fileprovider",
-                apkFile
-            )
-            val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, "application/vnd.android.package-archive")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            sendStatus("Installing update")
-            startActivity(intent)
-        } catch (_: Exception) {
-            sendStatus("Update installer unavailable")
-        }
     }
 
     private fun sendLocation(location: Location) {
@@ -510,14 +433,6 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
 
     override fun onResume() {
         super.onResume()
-
-        pendingUpdateFile?.let { apkFile ->
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()) {
-                pendingUpdateFile = null
-                launchPackageInstaller(apkFile)
-            }
-        }
-
         if (::locationManager.isInitialized && ::wifiManager.isInitialized && ::sensorManager.isInitialized) {
             requestSensorPermissions()
         }
