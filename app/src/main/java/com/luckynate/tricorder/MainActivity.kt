@@ -40,6 +40,7 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
 
     private var latestLocation: Location? = null
     private var latestHeadingDegrees: Float? = null
+    private var smoothedHeadingDegrees: Float? = null
     private var headingAccuracy = SensorManager.SENSOR_STATUS_UNRELIABLE
     private var headingSource = "none"
     private var wifiReceiverRegistered = false
@@ -411,9 +412,30 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     }
 
     private fun sendHeading() {
-        val heading = latestHeadingDegrees ?: return
+        val target = latestHeadingDegrees ?: return
+        val current = smoothedHeadingDegrees
+        val smoothed = if (current == null) {
+            target
+        } else {
+            val delta = ((target - current + 540f) % 360f) - 180f
+            (current + delta * 0.2f + 360f) % 360f
+        }
+        smoothedHeadingDegrees = smoothed
+
         val source = headingSource.replace("\\", "\\\\").replace("'", "\\'")
-        val script = "window.Tricorder && window.Tricorder.onHeading($heading,$headingAccuracy,'$source');"
+        val mapRotation = -smoothed
+        val script = """
+            (function(){
+              const mapEl=document.getElementById('map');
+              if(mapEl){
+                mapEl.style.transformOrigin='50% 50%';
+                mapEl.style.transform='rotate(${mapRotation}deg) scale(1.42)';
+              }
+              if(window.Tricorder && window.Tricorder.onHeading){
+                window.Tricorder.onHeading($smoothed,$headingAccuracy,'$source');
+              }
+            })();
+        """.trimIndent()
         runOnUiThread { webView.evaluateJavascript(script, null) }
     }
 
