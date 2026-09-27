@@ -50,10 +50,9 @@ jobs:
       - name: Build clean debug APK
         run: ./gradlew clean :app:assembleDebug --no-build-cache
 
-      - name: Name iterative APK
+      - name: Name latest APK
         run: |
           VERSION="0.1.${GITHUB_RUN_NUMBER}"
-          cp app/build/outputs/apk/debug/app-debug.apk "Tricorder-${VERSION}.apk"
           cp app/build/outputs/apk/debug/app-debug.apk Tricorder-latest.apk
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
 
@@ -61,9 +60,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Tricorder-${{ env.VERSION }}
-          path: |
-            Tricorder-${{ env.VERSION }}.apk
-            Tricorder-latest.apk
+          path: Tricorder-latest.apk
           if-no-files-found: error
           retention-days: 30
 
@@ -76,10 +73,8 @@ jobs:
             gh release create latest --title "Tricorder — Latest Build" --notes "Automatically updated APK from main."
           fi
 
-      - name: Replace latest APK and upload versioned APK
+      - name: Replace latest APK
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release upload latest Tricorder-latest.apk --clobber
-          gh release upload latest "Tricorder-${VERSION}.apk" --clobber
+        run: gh release upload latest Tricorder-latest.apk --clobber
