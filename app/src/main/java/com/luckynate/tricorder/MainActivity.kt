@@ -83,6 +83,7 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
             sampleLocationFrame()
             updateMotionHeadingFallback()
             requestWifiScan()
+            sendWifiResults()
             latestLocation?.let(::sendLocation)
             sendHeading()
             handler.postDelayed(this, SENSOR_FRAME_INTERVAL_MS)
