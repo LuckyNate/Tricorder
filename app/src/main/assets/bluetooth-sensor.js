@@ -11,7 +11,7 @@ class BluetoothSensor extends WifiSensor {
     super();
     this.id = 'bluetooth';
     this.label = 'BLUETOOTH DEVICE';
-    this.color = '#c58cff';
+    this.color = '#0082FC';
     this.paneName = 'bluetoothClouds';
     this.usesHeading = true;
     this.targets = new Map();
@@ -24,6 +24,19 @@ class BluetoothSensor extends WifiSensor {
       (BLUETOOTH_RSSI_AT_ONE_METER - Number(rssi)) / (10 * BLUETOOTH_PATH_LOSS_EXPONENT)
     );
     return Math.max(0.5, Math.min(80, meters));
+  }
+
+  addAnnulusLayers(layers, cloud) {
+    const outer = ringPoints(cloud.centerLat, cloud.centerLng, cloud.outerRadius);
+    const inner = ringPoints(cloud.centerLat, cloud.centerLng, cloud.innerRadius).reverse();
+    layers.push(L.polygon([outer, inner], {
+      pane: this.paneName,
+      stroke: false,
+      fillColor: this.color,
+      fillOpacity: 0.12 + cloud.confidence * 0.14,
+      fillRule: 'evenodd',
+      interactive: false
+    }));
   }
 
   ingest(observations) {
@@ -43,5 +56,7 @@ class BluetoothSensor extends WifiSensor {
   }
 }
 
+wifiSensor.color = '#39D353';
 const bluetoothSensor = window.Tricorder.registerSensor(new BluetoothSensor());
+renderSensorControls();
 window.Tricorder.onBluetoothScan = observations => bluetoothSensor.ingest(observations);
