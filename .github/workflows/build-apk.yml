@@ -47,13 +47,47 @@ jobs:
             git push
           fi
 
-      - name: Build clean debug APK
+      - name: Verify release signing secrets
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.TRICORDER_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.TRICORDER_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.TRICORDER_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.TRICORDER_KEY_PASSWORD }}
+        run: |
+          test -n "$KEYSTORE_BASE64" || { echo "Missing TRICORDER_KEYSTORE_BASE64"; exit 1; }
+          test -n "$KEYSTORE_PASSWORD" || { echo "Missing TRICORDER_KEYSTORE_PASSWORD"; exit 1; }
+          test -n "$KEY_ALIAS" || { echo "Missing TRICORDER_KEY_ALIAS"; exit 1; }
+          test -n "$KEY_PASSWORD" || { echo "Missing TRICORDER_KEY_PASSWORD"; exit 1; }
+
+      - name: Prepare release signing key
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.TRICORDER_KEYSTORE_BASE64 }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/tricorder-release.jks"
+
+      - name: Build signed release APK
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          TRICORDER_KEYSTORE_PATH: ${{ runner.temp }}/tricorder-release.jks
+          TRICORDER_KEYSTORE_PASSWORD: ${{ secrets.TRICORDER_KEYSTORE_PASSWORD }}
+          TRICORDER_KEY_ALIAS: ${{ secrets.TRICORDER_KEY_ALIAS }}
+          TRICORDER_KEY_PASSWORD: ${{ secrets.TRICORDER_KEY_PASSWORD }}
+        run: ./gradlew clean :app:assembleRelease --no-build-cache
+
+      - name: Build debug APK
+        if: github.event_name != 'push' || github.ref != 'refs/heads/main'
         run: ./gradlew clean :app:assembleDebug --no-build-cache
 
       - name: Name latest APK
         run: |
           VERSION="0.1.${GITHUB_RUN_NUMBER}"
-          cp app/build/outputs/apk/debug/app-debug.apk Tricorder-latest.apk
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            cp app/build/outputs/apk/release/app-release.apk Tricorder-latest.apk
+          else
+            cp app/build/outputs/apk/debug/app-debug.apk Tricorder-latest.apk
+          fi
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
 
       - name: Upload workflow artifact
@@ -70,8 +104,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if ! gh release view latest >/dev/null 2>&1; then
-            gh release create latest --title "Tricorder — Latest Build" --notes "Automatically updated APK from main."
+            gh release create latest --title "Tricorder — Latest Build" --notes "versionCode=${GITHUB_RUN_NUMBER}\nversionName=0.1.${GITHUB_RUN_NUMBER}\nAutomatically updated APK from main."
           fi
+
+      - name: Update latest release metadata
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          printf 'versionCode=%s\nversionName=0.1.%s\nAutomatically updated APK from main.\n' "$GITHUB_RUN_NUMBER" "$GITHUB_RUN_NUMBER" > release-notes.txt
+          gh release edit latest --title "Tricorder — Latest Build" --notes-file release-notes.txt
 
       - name: Replace latest APK
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
