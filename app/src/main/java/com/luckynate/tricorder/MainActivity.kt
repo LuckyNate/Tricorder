@@ -46,6 +46,7 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     private lateinit var sensorManager: SensorManager
     private lateinit var bluetoothScanner: BluetoothScanner
     private lateinit var nearbyNetworkScanner: NearbyNetworkScanner
+    private lateinit var appUpdater: AppUpdater
     private val handler = Handler(Looper.getMainLooper())
 
     private var latestLocation: Location? = null
@@ -125,6 +126,7 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         bluetoothScanner = BluetoothScanner(applicationContext)
         nearbyNetworkScanner = NearbyNetworkScanner(applicationContext)
+        appUpdater = AppUpdater(this, ::sendStatus)
         requestSensorPermissions()
     }
 
@@ -418,39 +420,9 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     }
 
     private fun checkForUpdates() {
-        val now = SystemClock.elapsedRealtime()
-        if (now - lastUpdateCheckAt < UPDATE_CHECK_THROTTLE_MS) return
-        lastUpdateCheckAt = now
-
-        Thread {
-            try {
-                val connection = (URL(UPDATE_API_URL).openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 8_000
-                    readTimeout = 12_000
-                    requestMethod = "GET"
-                    setRequestProperty("Accept", "application/vnd.github+json")
-                    setRequestProperty("User-Agent", "Tricorder/${BuildConfig.VERSION_NAME}")
-                }
-
-                val body = connection.inputStream.bufferedReader().use { it.readText() }
-                connection.disconnect()
-
-                val release = JSONObject(body)
-                val releaseNotes = release.optString("body")
-                val newestVersionCode = RELEASE_VERSION_CODE_PATTERN
-                    .find(releaseNotes)
-                    ?.groupValues
-                    ?.getOrNull(1)
-                    ?.toIntOrNull()
-                    ?: BuildConfig.VERSION_CODE
-
-                if (newestVersionCode > BuildConfig.VERSION_CODE) {
-                    sendStatus("Update 0.1.$newestVersionCode available")
-                }
-            } catch (_: Exception) {
-                // Updating is opportunistic; sensor operation continues normally if GitHub is unavailable.
-            }
-        }.start()
+        if (::appUpdater.isInitialized) {
+            appUpdater.checkForUpdates()
+        }
     }
 
     private fun sendLocation(location: Location) {
