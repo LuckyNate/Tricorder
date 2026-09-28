@@ -37,17 +37,7 @@
       const nextRoll = Number.isFinite(Number(pose.roll)) ? Number(pose.roll) : this.pose.roll;
       const nextAltitude = Number.isFinite(Number(pose.altitude)) ? Number(pose.altitude) : this.pose.altitude;
       const nextVerticalAccuracy = Number.isFinite(Number(pose.verticalAccuracy)) ? Number(pose.verticalAccuracy) : this.pose.verticalAccuracy;
-      if (
-        nextHeading === this.pose.heading && nextPitch === this.pose.pitch && nextRoll === this.pose.roll &&
-        nextAltitude === this.pose.altitude && nextVerticalAccuracy === this.pose.verticalAccuracy
-      ) return;
-      this.pose = {
-        heading: nextHeading,
-        pitch: nextPitch,
-        roll: nextRoll,
-        altitude: nextAltitude,
-        verticalAccuracy: nextVerticalAccuracy
-      };
+      this.pose = { heading: nextHeading, pitch: nextPitch, roll: nextRoll, altitude: nextAltitude, verticalAccuracy: nextVerticalAccuracy };
       this.viewVersion += 1;
     }
 
@@ -68,13 +58,43 @@
       };
     }
 
-    relativePosition(position) {
+    resolveTargetAltitude(target) {
+      if (!target || !target.position) return null;
+      if (Number.isFinite(Number(target.position.altitude))) return Number(target.position.altitude);
+      const samples = target.observations || [];
+      let weightedAltitude = 0;
+      let totalWeight = 0;
+      samples.forEach(observation => {
+        const raw = observation.raw || {};
+        const observerAltitude = Number(raw.altitude);
+        if (!Number.isFinite(observerAltitude)) return;
+        let inferred = observerAltitude;
+        const pitch = Number(raw.pitch);
+        const rssi = Number(observation.rssi);
+        if (Number.isFinite(pitch) && Number.isFinite(rssi) && target.sensor && typeof target.sensor.rangeFromRssi === 'function') {
+          const range = target.sensor.rangeFromRssi(rssi);
+          inferred += Math.sin(-pitch * Math.PI / 180) * range;
+        }
+        const verticalAccuracy = Math.max(2, Number(raw.verticalAccuracy) || Number(observation.accuracy) || 12);
+        const signalWeight = Number.isFinite(rssi) ? clamp((rssi + 100) / 50, 0.2, 1) : 0.25;
+        const weight = signalWeight / verticalAccuracy;
+        weightedAltitude += inferred * weight;
+        totalWeight += weight;
+      });
+      if (!totalWeight) return this.pose.altitude;
+      const altitude = weightedAltitude / totalWeight;
+      target.position.altitude = altitude;
+      return altitude;
+    }
+
+    relativePosition(target) {
       const observer = this.observerPosition();
+      const position = target && target.position;
       if (!observer || !position) return null;
       const meanLat = (observer.latitude + position.latitude) * 0.5;
       const east = (position.longitude - observer.longitude) * metersPerDegreeLng(meanLat);
       const north = (position.latitude - observer.latitude) * METERS_PER_DEGREE_LAT;
-      const targetAltitude = Number.isFinite(Number(position.altitude)) ? Number(position.altitude) : observer.altitude;
+      const targetAltitude = this.resolveTargetAltitude(target);
       const up = Number.isFinite(targetAltitude) && Number.isFinite(observer.altitude) ? targetAltitude - observer.altitude : 0;
       const horizontal = Math.hypot(east, north);
       const distance = Math.hypot(horizontal, up);
@@ -98,9 +118,7 @@
         x: width / 2 + Math.sin(yawRad) * horizontalRadius,
         y: height / 2 - Math.sin(elevationRad) * radialDistance - Math.cos(yawRad) * horizontalRadius * 0.18,
         depth: Math.cos(yawRad) * Math.cos(elevationRad),
-        distance: relative.distance,
-        elevation,
-        yaw
+        distance: relative.distance
       };
     }
 
@@ -116,11 +134,10 @@
         if (!sensor.enabled) return;
         sensor.targets.forEach(target => {
           if (!target.position) return;
-          const relative = this.relativePosition(target.position);
+          const relative = this.relativePosition(target);
           if (!relative || relative.distance > this.rangeMeters + (target.uncertaintyMeters || 0)) return;
           const projected = this.project(relative);
           if (!projected) return;
-
           const pxPerMeter = Math.min(this.scene.clientWidth || 320, this.scene.clientHeight || 320) * 0.43 / Math.max(1, this.rangeMeters);
           const radiusPx = clamp((target.uncertaintyMeters || 5) * pxPerMeter, 6, 110);
           const sphere = document.createElement('div');
@@ -134,7 +151,6 @@
           sphere.style.zIndex = String(Math.round((projected.depth + 1) * 50));
           sphere.title = `${target.name || target.id} · ${Math.round(relative.distance)}m · ${relative.up >= 0 ? '+' : ''}${Math.round(relative.up)}m vertical`;
           this.targetLayer.appendChild(sphere);
-
           if ((target.confidence || 0) >= 0.62) {
             const dot = document.createElement('div');
             dot.className = 'spatial-target-dot';
