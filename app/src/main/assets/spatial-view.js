@@ -128,8 +128,8 @@
       }
 
       {
-        const sin = Math.sin(pitch);
-        const cos = Math.cos(pitch);
+        const sin = Math.sin(-pitch);
+        const cos = Math.cos(-pitch);
         const ny = cos * y - sin * z;
         const nz = sin * y + cos * z;
         y = ny;
