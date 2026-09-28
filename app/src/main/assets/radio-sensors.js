@@ -143,7 +143,7 @@ function enrichBluetooth(bluetoothSensor, rows) {
 
 class CellularSensor extends Sensor {
   constructor() {
-    super({ id: 'cellular', label: 'CELLULAR', color: '#FF5C8A' });
+    super({ id: 'cellular', label: 'CELLULAR', color: '#6F8FAF' });
   }
 
   ingest(rows) {
