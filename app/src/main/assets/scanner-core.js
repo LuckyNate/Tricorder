@@ -128,7 +128,7 @@ class RadarView {
     const desiredMetersPerPixel = Math.max(0.05, this.rangeMeters / (minDimension * 0.36));
     const latitudeRadians = this.location.latitude * Math.PI / 180;
     const baseMetersPerPixel = 156543.03392 * Math.cos(latitudeRadians);
-    return Math.max(3, Math.min(20, Math.round(Math.log2(baseMetersPerPixel / desiredMetersPerPixel))));
+    return Math.max(3, Math.min(19, Math.round(Math.log2(baseMetersPerPixel / desiredMetersPerPixel))));
   }
 
   metersPerPixel() {
