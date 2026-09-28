@@ -31,7 +31,18 @@ class BluetoothScanner(private val context: Context, private val observerPose: (
         val timestampNanos: Long,
         val source: String,
         val confirmedNearby: Boolean,
-        val pose: ObserverPose?
+        val pose: ObserverPose?,
+        val txPower: Int? = null,
+        val advertiseFlags: Int? = null,
+        val primaryPhy: Int? = null,
+        val secondaryPhy: Int? = null,
+        val advertisingSid: Int? = null,
+        val connectable: Boolean? = null,
+        val serviceUuids: List<String> = emptyList(),
+        val manufacturerData: Map<Int, String> = emptyMap(),
+        val serviceData: Map<String, String> = emptyMap(),
+        val deviceClass: Int? = null,
+        val majorDeviceClass: Int? = null
     )
 
     private val bluetoothManager = context.getSystemService(BluetoothManager::class.java)
@@ -125,10 +136,31 @@ class BluetoothScanner(private val context: Context, private val observerPose: (
                 put("name", observation.name)
                 observation.rssi?.let { put("rssi", it) }
                 put("timestamp", observation.timestampNanos / 1_000_000L)
-                put("ageMs", ((now - observation.timestampNanos) / 1_000_000_000L).coerceAtLeast(0L) * 1000L)
+                put("ageMs", ((now - observation.timestampNanos) / 1_000_000L).coerceAtLeast(0L))
                 put("source", observation.source)
                 put("confirmedNearby", observation.confirmedNearby)
                 put("bonded", observation.address in bondedAddresses)
+                observation.txPower?.let { put("txPower", it) }
+                observation.advertiseFlags?.let { put("advertiseFlags", it) }
+                observation.primaryPhy?.let { put("primaryPhy", it) }
+                observation.secondaryPhy?.let { put("secondaryPhy", it) }
+                observation.advertisingSid?.let { put("advertisingSid", it) }
+                observation.connectable?.let { put("connectable", it) }
+                observation.deviceClass?.let { put("deviceClass", it) }
+                observation.majorDeviceClass?.let { put("majorDeviceClass", it) }
+                if (observation.serviceUuids.isNotEmpty()) {
+                    put("serviceUuids", JSONArray(observation.serviceUuids))
+                }
+                if (observation.manufacturerData.isNotEmpty()) {
+                    put("manufacturerData", JSONObject().apply {
+                        observation.manufacturerData.forEach { (id, value) -> put(id.toString(), value) }
+                    })
+                }
+                if (observation.serviceData.isNotEmpty()) {
+                    put("serviceData", JSONObject().apply {
+                        observation.serviceData.forEach { (id, value) -> put(id, value) }
+                    })
+                }
                 observation.pose?.takeIf { kotlin.math.abs(it.capturedAtNanos - observation.timestampNanos) <= 2_000_000_000L }?.let { pose ->
                     if (pose.latitude != null && pose.longitude != null) {
                         put("latitude", pose.latitude)
@@ -208,6 +240,7 @@ class BluetoothScanner(private val context: Context, private val observerPose: (
                 val address = device.address?.lowercase() ?: return@forEach
                 bondedAddresses.add(address)
                 val previous = latest[address]
+                val bluetoothClass = device.bluetoothClass
                 latest[address] = Observation(
                     address = address,
                     name = name,
@@ -215,7 +248,18 @@ class BluetoothScanner(private val context: Context, private val observerPose: (
                     timestampNanos = previous?.timestampNanos ?: SystemClock.elapsedRealtimeNanos(),
                     source = previous?.source?.takeIf { it != SOURCE_BONDED } ?: SOURCE_BONDED,
                     confirmedNearby = previous?.confirmedNearby ?: false,
-                    pose = previous?.pose
+                    pose = previous?.pose,
+                    txPower = previous?.txPower,
+                    advertiseFlags = previous?.advertiseFlags,
+                    primaryPhy = previous?.primaryPhy,
+                    secondaryPhy = previous?.secondaryPhy,
+                    advertisingSid = previous?.advertisingSid,
+                    connectable = previous?.connectable,
+                    serviceUuids = previous?.serviceUuids.orEmpty(),
+                    manufacturerData = previous?.manufacturerData.orEmpty(),
+                    serviceData = previous?.serviceData.orEmpty(),
+                    deviceClass = bluetoothClass?.deviceClass ?: previous?.deviceClass,
+                    majorDeviceClass = bluetoothClass?.majorDeviceClass ?: previous?.majorDeviceClass
                 )
             }
         } catch (_: SecurityException) {
@@ -226,9 +270,22 @@ class BluetoothScanner(private val context: Context, private val observerPose: (
         if (!hasPermission()) return
         try {
             val device = result.device ?: return
-            val name = result.scanRecord?.deviceName ?: device.name ?: "Bluetooth"
+            val scanRecord = result.scanRecord
+            val name = scanRecord?.deviceName ?: device.name ?: "Bluetooth"
             if (isAutomotive(device, name)) return
             val address = device.address?.lowercase() ?: return
+            val manufacturerData = LinkedHashMap<Int, String>()
+            scanRecord?.manufacturerSpecificData?.let { values ->
+                for (index in 0 until values.size()) {
+                    val key = values.keyAt(index)
+                    manufacturerData[key] = values.valueAt(index)?.toHex().orEmpty()
+                }
+            }
+            val serviceData = LinkedHashMap<String, String>()
+            scanRecord?.serviceData?.forEach { (uuid, bytes) ->
+                serviceData[uuid.toString()] = bytes?.toHex().orEmpty()
+            }
+            val bluetoothClass = device.bluetoothClass
             latest[address] = Observation(
                 address = address,
                 name = name,
@@ -236,7 +293,18 @@ class BluetoothScanner(private val context: Context, private val observerPose: (
                 timestampNanos = result.timestampNanos,
                 source = SOURCE_BLE,
                 confirmedNearby = true,
-                pose = observerPose()
+                pose = observerPose(),
+                txPower = scanRecord?.txPowerLevel?.takeIf { it != Int.MIN_VALUE },
+                advertiseFlags = scanRecord?.advertiseFlags?.takeIf { it >= 0 },
+                primaryPhy = result.primaryPhy,
+                secondaryPhy = result.secondaryPhy,
+                advertisingSid = result.advertisingSid.takeIf { it >= 0 },
+                connectable = result.isConnectable,
+                serviceUuids = scanRecord?.serviceUuids.orEmpty().map { it.toString() },
+                manufacturerData = manufacturerData,
+                serviceData = serviceData,
+                deviceClass = bluetoothClass?.deviceClass,
+                majorDeviceClass = bluetoothClass?.majorDeviceClass
             )
         } catch (_: SecurityException) {
         }
@@ -262,6 +330,8 @@ class BluetoothScanner(private val context: Context, private val observerPose: (
             } else {
                 null
             }
+            val previous = latest[address]
+            val bluetoothClass = device.bluetoothClass
 
             latest[address] = Observation(
                 address = address,
@@ -270,11 +340,24 @@ class BluetoothScanner(private val context: Context, private val observerPose: (
                 timestampNanos = SystemClock.elapsedRealtimeNanos(),
                 source = SOURCE_CLASSIC,
                 confirmedNearby = true,
-                pose = observerPose()
+                pose = observerPose(),
+                txPower = previous?.txPower,
+                advertiseFlags = previous?.advertiseFlags,
+                primaryPhy = previous?.primaryPhy,
+                secondaryPhy = previous?.secondaryPhy,
+                advertisingSid = previous?.advertisingSid,
+                connectable = previous?.connectable,
+                serviceUuids = previous?.serviceUuids.orEmpty(),
+                manufacturerData = previous?.manufacturerData.orEmpty(),
+                serviceData = previous?.serviceData.orEmpty(),
+                deviceClass = bluetoothClass?.deviceClass ?: previous?.deviceClass,
+                majorDeviceClass = bluetoothClass?.majorDeviceClass ?: previous?.majorDeviceClass
             )
         } catch (_: SecurityException) {
         }
     }
+
+    private fun ByteArray.toHex(): String = joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
 
     private fun isAutomotive(device: BluetoothDevice, name: String): Boolean {
         try {
