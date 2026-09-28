@@ -8,9 +8,11 @@
   try {
     if (!window.ScannerCore) throw new Error('ScannerCore failed to load');
     if (!window.ScannerSensors) throw new Error('ScannerSensors failed to load');
+    if (!window.RadioSensors) throw new Error('RadioSensors failed to load');
 
     const { RadarView, ScannerEngine } = window.ScannerCore;
     const { LocationSensor, HeadingSensor, WifiSensor, BluetoothSensor, NetworkSensor } = window.ScannerSensors;
+    const { CellularSensor, applyWifiRtt, enrichBluetooth } = window.RadioSensors;
 
     const ranges = [20, 50, 100, 500, 1000];
     const controlStatus = document.getElementById('controlStatus');
@@ -56,7 +58,14 @@
 
     const engine = new ScannerEngine(radar);
     const sourceStatus = document.getElementById('sourceStatus');
-    const sourceState = { location: 'location waiting', wifi: 'Wi-Fi waiting', bluetooth: 'Bluetooth waiting', network: 'network waiting' };
+    const sourceState = {
+      location: 'location waiting',
+      wifi: 'Wi-Fi waiting',
+      bluetooth: 'Bluetooth waiting',
+      cellular: 'cellular waiting',
+      network: 'network waiting',
+      radios: 'radio capabilities waiting'
+    };
     const availability = {};
     let receivedWifiSnapshot = false;
     function showSources() {
@@ -73,7 +82,21 @@
     const headingSensor = engine.register(new HeadingSensor());
     const wifiSensor = engine.register(new WifiSensor());
     const bluetoothSensor = engine.register(new BluetoothSensor());
+    const cellularSensor = engine.register(new CellularSensor());
     const networkSensor = engine.register(new NetworkSensor());
+
+    function radioCapabilityText(capabilities) {
+      if (!capabilities || typeof capabilities !== 'object') return 'radio capabilities unknown';
+      const parts = [];
+      parts.push(capabilities.wifiRttSupported
+        ? `RTT ${capabilities.wifiRttAvailable ? 'ready' : 'unavailable'}`
+        : 'RTT unsupported');
+      parts.push(capabilities.wifiAwareSupported
+        ? `Aware ${capabilities.wifiAwareAvailable ? 'ready' : 'unavailable'}`
+        : 'Aware unsupported');
+      parts.push(capabilities.uwbSupported ? 'UWB peer-ready' : 'UWB unsupported');
+      return parts.join(' / ');
+    }
 
     window.Tricorder = {
       engine,
@@ -100,7 +123,21 @@
       onBluetoothScan(observations) {
         try {
           bluetoothSensor.ingest(observations);
+          enrichBluetooth(bluetoothSensor, observations);
           sourceState.bluetooth = `Bluetooth ${bluetoothSensor.targets.size}`;
+          engine.needsRender = true;
+          showSources();
+        } catch (error) { fault(error.message || error); }
+      },
+      onRadioFrame(frame) {
+        try {
+          const payload = frame || {};
+          const rtt = Array.isArray(payload.rtt) ? payload.rtt : [];
+          const cellular = Array.isArray(payload.cellular) ? payload.cellular : [];
+          applyWifiRtt(wifiSensor, rtt);
+          cellularSensor.ingest(cellular);
+          sourceState.cellular = `cellular ${cellularSensor.targets.size}`;
+          sourceState.radios = radioCapabilityText(payload.capabilities);
           engine.needsRender = true;
           showSources();
         } catch (error) { fault(error.message || error); }
