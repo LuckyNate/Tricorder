@@ -13,7 +13,17 @@
     const { LocationSensor, HeadingSensor, WifiSensor, BluetoothSensor, NetworkSensor } = window.ScannerSensors;
 
     const ranges = [20, 50, 100, 500, 1000];
-    const rangeButton = document.getElementById('range');
+    const controlStatus = document.getElementById('controlStatus');
+    let rangeButton = document.getElementById('range');
+    if (!rangeButton && controlStatus) {
+      rangeButton = document.createElement('button');
+      rangeButton.id = 'range';
+      rangeButton.type = 'button';
+      rangeButton.setAttribute('aria-label', 'Change radar range');
+      controlStatus.appendChild(rangeButton);
+    }
+    if (!rangeButton) throw new Error('Range selector missing');
+
     const modeToggle = document.getElementById('modeToggle');
     const mode2d = document.getElementById('mode2d');
     const mode3d = document.getElementById('mode3d');
