@@ -226,8 +226,7 @@ class NearbyNetworkScanner(private val context: Context) {
         if (!running) return
         val socket = ssdpSocket ?: return
         val now = SystemClock.elapsedRealtimeNanos()
-        val previous = lastSsdpSearchNanos
-        if (previous != 0L && now - previous < SSDP_SEARCH_INTERVAL_NANOS) return
+        if (lastSsdpSearchNanos != 0L && now - lastSsdpSearchNanos < SSDP_SEARCH_INTERVAL_NANOS) return
         lastSsdpSearchNanos = now
         val request = (
             "M-SEARCH * HTTP/1.1\r\n" +
@@ -337,7 +336,7 @@ class NearbyNetworkScanner(private val context: Context) {
     private fun startMediaRoutes() {
         val router = mediaRouter ?: return
         try {
-            router.addCallback(MEDIA_ROUTE_TYPES, mediaRouterCallback, MediaRouter.CALLBACK_FLAG_REQUEST_DISCOVERY)
+            router.addCallback(MEDIA_ROUTE_TYPES, mediaRouterCallback, MediaRouter.CALLBACK_FLAG_PERFORM_ACTIVE_SCAN)
             refreshMediaRoutes()
         } catch (_: Exception) {
         }
@@ -350,16 +349,18 @@ class NearbyNetworkScanner(private val context: Context) {
     private fun refreshMediaRoutes() {
         val router = mediaRouter ?: return
         try {
+            val defaultRoute = router.defaultRoute
             for (i in 0 until router.routeCount) {
                 val route = router.getRouteAt(i)
-                if (route.isDefault) continue
+                if (route == defaultRoute) continue
                 val name = route.getName(context)?.toString() ?: "Media route"
                 val description = route.description?.toString().orEmpty()
+                val hasVideo = (route.supportedTypes and MediaRouter.ROUTE_TYPE_LIVE_VIDEO) != 0
                 record(
                     id = "media:${name.lowercase()}:${route.supportedTypes}",
                     name = name,
                     source = "media-route",
-                    kind = if ((route.supportedTypes and MediaRouter.ROUTE_TYPE_REMOTE_DISPLAY) != 0) "cast" else "media",
+                    kind = if (hasVideo) "cast" else "media",
                     detail = description,
                     persistent = true
                 )
@@ -374,8 +375,7 @@ class NearbyNetworkScanner(private val context: Context) {
         private const val STALE_AFTER_NANOS = 90_000_000_000L
         private const val SSDP_SEARCH_INTERVAL_NANOS = 10_000_000_000L
         private const val P2P_DISCOVERY_INTERVAL_NANOS = 15_000_000_000L
-        private const val MEDIA_ROUTE_TYPES =
-            MediaRouter.ROUTE_TYPE_LIVE_AUDIO or MediaRouter.ROUTE_TYPE_LIVE_VIDEO or MediaRouter.ROUTE_TYPE_REMOTE_DISPLAY
+        private val MEDIA_ROUTE_TYPES = MediaRouter.ROUTE_TYPE_LIVE_AUDIO or MediaRouter.ROUTE_TYPE_LIVE_VIDEO
 
         private val NSD_SERVICE_TYPES = listOf(
             "_googlecast._tcp.",
