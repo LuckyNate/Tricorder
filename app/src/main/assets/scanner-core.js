@@ -288,6 +288,7 @@ class ScannerEngine {
     if (!this.controlsEl) return;
     this.controlsEl.replaceChildren();
     this.sensors.forEach(sensor => {
+      if (sensor.id === 'heading') return;
       const button = document.createElement('button');
       button.type = 'button';
       button.className = `sensor-key${sensor.enabled ? '' : ' sensor-off'}`;
