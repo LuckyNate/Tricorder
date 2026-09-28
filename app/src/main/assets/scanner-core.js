@@ -344,7 +344,7 @@ class ScannerEngine {
     this.controlsEl.replaceChildren();
     this.sensors.forEach(sensor => {
       if (sensor.id === 'heading') return;
-      const fixed = sensor.id === 'network';
+      const fixed = sensor.id === 'network' || sensor.id === 'location' || sensor.id === 'cellular';
       const control = document.createElement(fixed ? 'div' : 'button');
       if (!fixed) control.type = 'button';
       control.className = fixed ? 'sensor-key sensor-fixed' : `sensor-key${sensor.enabled ? '' : ' sensor-off'}`;
