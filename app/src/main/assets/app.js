@@ -9,6 +9,7 @@
     if (!window.ScannerCore) throw new Error('ScannerCore failed to load');
     if (!window.ScannerSensors) throw new Error('ScannerSensors failed to load');
     if (!window.RadioSensors) throw new Error('RadioSensors failed to load');
+    if (!window.SpatialView) throw new Error('SpatialView failed to load');
 
     const { RadarView, ScannerEngine } = window.ScannerCore;
     const { LocationSensor, HeadingSensor, WifiSensor, BluetoothSensor, NetworkSensor } = window.ScannerSensors;
@@ -39,13 +40,43 @@
     syncRangeButton();
 
     const radar = new RadarView();
+    const spatial = new window.SpatialView(radar);
     radar.setRange(ranges[rangeIndex]);
+    spatial.setRange(ranges[rangeIndex]);
+
+    const pose = {
+      heading: 0,
+      pitch: 0,
+      roll: 0,
+      altitude: null,
+      verticalAccuracy: null,
+      latitude: null,
+      longitude: null,
+      accuracy: null
+    };
+
+    function stampPose(rows) {
+      if (!Array.isArray(rows)) return rows;
+      return rows.map(raw => {
+        const next = { ...raw };
+        if (!Number.isFinite(Number(next.heading))) next.heading = pose.heading;
+        if (!Number.isFinite(Number(next.pitch))) next.pitch = pose.pitch;
+        if (!Number.isFinite(Number(next.roll))) next.roll = pose.roll;
+        if (!Number.isFinite(Number(next.altitude)) && Number.isFinite(Number(pose.altitude))) next.altitude = pose.altitude;
+        if (!Number.isFinite(Number(next.verticalAccuracy)) && Number.isFinite(Number(pose.verticalAccuracy))) next.verticalAccuracy = pose.verticalAccuracy;
+        if (!Number.isFinite(Number(next.latitude)) && Number.isFinite(Number(pose.latitude))) next.latitude = pose.latitude;
+        if (!Number.isFinite(Number(next.longitude)) && Number.isFinite(Number(pose.longitude))) next.longitude = pose.longitude;
+        if (!Number.isFinite(Number(next.accuracy)) && Number.isFinite(Number(pose.accuracy))) next.accuracy = pose.accuracy;
+        return next;
+      });
+    }
 
     rangeButton.addEventListener('click', () => {
       rangeIndex = (rangeIndex + 1) % ranges.length;
       const range = ranges[rangeIndex];
       syncRangeButton();
       radar.setRange(range);
+      spatial.setRange(range);
     });
 
     let mode = '2d';
@@ -105,9 +136,16 @@
       return parts.join(' / ');
     }
 
+    function renderSpatialFrame() {
+      spatial.render(engine);
+      window.requestAnimationFrame(renderSpatialFrame);
+    }
+    window.requestAnimationFrame(renderSpatialFrame);
+
     window.Tricorder = {
       engine,
       radar,
+      spatial,
       snapshotState() {
         return JSON.stringify({
           schemaVersion: 1,
@@ -121,7 +159,6 @@
           const state = typeof snapshot === 'string' ? JSON.parse(snapshot) : snapshot;
           if (!state || state.schemaVersion !== 1 || !state.engine) return false;
           if (!engine.importRecoveryState(state.engine)) return false;
-
           const restoredRange = Number(engine.radar.rangeMeters);
           const restoredIndex = ranges.indexOf(restoredRange);
           if (restoredIndex >= 0) rangeIndex = restoredIndex;
@@ -129,6 +166,7 @@
             rangeIndex = Math.max(0, Math.min(ranges.length - 1, Number(state.ui.rangeIndex)));
             radar.setRange(ranges[rangeIndex]);
           }
+          spatial.setRange(ranges[rangeIndex]);
           syncRangeButton();
           applyMode(state.ui && state.ui.mode === '3d' ? '3d' : '2d');
           engine.needsRender = true;
@@ -139,29 +177,47 @@
           return false;
         }
       },
-      onLocation(latitude, longitude, accuracy) {
+      onLocation(latitude, longitude, accuracy, altitude, verticalAccuracy) {
         try {
           locationSensor.ingest(latitude, longitude, accuracy);
+          pose.latitude = Number(latitude);
+          pose.longitude = Number(longitude);
+          pose.accuracy = Number(accuracy);
+          if (Number.isFinite(Number(altitude))) pose.altitude = Number(altitude);
+          if (Number.isFinite(Number(verticalAccuracy))) pose.verticalAccuracy = Number(verticalAccuracy);
+          if (radar.location) {
+            radar.location.altitude = pose.altitude;
+            radar.location.verticalAccuracy = pose.verticalAccuracy;
+          }
+          spatial.setPose(pose);
           sourceState.location = `observer ±${Math.round(Number(accuracy) || 0)}m`;
           showSources();
         } catch (error) { fault(error.message || error); }
       },
-      onHeading(heading) {
-        try { headingSensor.ingest(heading); } catch (error) { fault(error.message || error); }
+      onHeading(heading, accuracy, source, pitch, roll) {
+        try {
+          headingSensor.ingest(heading);
+          pose.heading = Number(heading) || 0;
+          if (Number.isFinite(Number(pitch))) pose.pitch = Number(pitch);
+          if (Number.isFinite(Number(roll))) pose.roll = Number(roll);
+          spatial.setPose(pose);
+        } catch (error) { fault(error.message || error); }
       },
       onWifiScan(observations) {
         try {
-          wifiSensor.ingest(observations);
+          const stamped = stampPose(observations);
+          wifiSensor.ingest(stamped);
           receivedWifiSnapshot = true;
-          if (observations.some(o => Number(o.ageMs) < 5000)) delete availability.wifi;
+          if (stamped.some(o => Number(o.ageMs) < 5000)) delete availability.wifi;
           engine.needsRender = true;
           showSources();
         } catch (error) { fault(error.message || error); }
       },
       onBluetoothScan(observations) {
         try {
-          bluetoothSensor.ingest(observations);
-          enrichBluetooth(bluetoothSensor, observations);
+          const stamped = stampPose(observations);
+          bluetoothSensor.ingest(stamped);
+          enrichBluetooth(bluetoothSensor, stamped);
           sourceState.bluetooth = `Bluetooth ${bluetoothSensor.targets.size}`;
           engine.needsRender = true;
           showSources();
@@ -171,7 +227,7 @@
         try {
           const payload = frame || {};
           const rtt = Array.isArray(payload.rtt) ? payload.rtt : [];
-          const cellular = Array.isArray(payload.cellular) ? payload.cellular : [];
+          const cellular = stampPose(Array.isArray(payload.cellular) ? payload.cellular : []);
           applyWifiRtt(wifiSensor, rtt);
           cellularSensor.ingest(cellular);
           sourceState.cellular = `cellular ${cellularSensor.targets.size}`;
@@ -182,14 +238,12 @@
       },
       onNearbyNetworkScan(observations) {
         try {
-          networkSensor.ingest(observations);
+          networkSensor.ingest(stampPose(observations));
           sourceState.network = `network ${networkSensor.targets.size}`;
           showSources();
         } catch (error) { fault(error.message || error); }
       },
-      onStatus(message) {
-        engine.setStatus(String(message || ''));
-      },
+      onStatus(message) { engine.setStatus(String(message || '')); },
       onSensorAvailability(id, state) {
         if (Object.prototype.hasOwnProperty.call(sourceState, id)) {
           if (state) availability[id] = String(state);
