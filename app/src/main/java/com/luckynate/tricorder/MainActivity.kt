@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.hardware.GeomagneticField
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
@@ -56,7 +57,6 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     private var latestGpsLocation: Location? = null
     private var latestNetworkLocation: Location? = null
     private var latestHeadingDegrees: Float? = null
-    private var smoothedHeadingDegrees: Float? = null
     private var headingAccuracy = SensorManager.SENSOR_STATUS_UNRELIABLE
     private var headingSource = "none"
     private val locationHistory = ArrayDeque<Location>()
@@ -292,10 +292,23 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
 
         var heading = (orientation[0] * 180f / PI.toFloat())
         if (heading < 0f) heading += 360f
+        heading = magneticToTrueHeading(heading)
 
         latestHeadingDegrees = heading
         headingSource = "orientation"
         recordHeadingSample(event.timestamp, heading, headingAccuracy, headingSource)
+    }
+
+    private fun magneticToTrueHeading(magneticHeading: Float): Float {
+        val location = latestGpsLocation ?: latestLocation ?: return magneticHeading
+        val altitudeMeters = if (location.hasAltitude()) location.altitude.toFloat() else 0f
+        val field = GeomagneticField(
+            location.latitude.toFloat(),
+            location.longitude.toFloat(),
+            altitudeMeters,
+            System.currentTimeMillis()
+        )
+        return ((magneticHeading + field.declination) % 360f + 360f) % 360f
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
@@ -583,18 +596,9 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     }
 
     private fun sendHeading() {
-        val target = latestHeadingDegrees ?: return
-        val current = smoothedHeadingDegrees
-        val smoothed = if (current == null) {
-            target
-        } else {
-            val delta = ((target - current + 540f) % 360f) - 180f
-            (current + delta * 0.2f + 360f) % 360f
-        }
-        smoothedHeadingDegrees = smoothed
-
+        val heading = latestHeadingDegrees ?: return
         val source = headingSource.replace("\\", "\\\\").replace("'", "\\'")
-        val script = "window.Tricorder && window.Tricorder.onHeading($smoothed,$headingAccuracy,'$source');"
+        val script = "window.Tricorder && window.Tricorder.onHeading($heading,$headingAccuracy,'$source');"
         runOnUiThread { webView.evaluateJavascript(script, null) }
     }
 
