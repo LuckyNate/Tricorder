@@ -313,7 +313,7 @@ class ScannerEngine {
   }
 
   register(sensor) {
-    sensor.attach(this);
+    sensor.attach(engine);
     this.sensors.set(sensor.id, sensor);
     this.refreshControls();
     return sensor;
@@ -344,17 +344,18 @@ class ScannerEngine {
     this.controlsEl.replaceChildren();
     this.sensors.forEach(sensor => {
       if (sensor.id === 'heading') return;
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = `sensor-key${sensor.enabled ? '' : ' sensor-off'}`;
-      button.style.setProperty('--sensor-color', sensor.color);
+      const fixed = sensor.id === 'network';
+      const control = document.createElement(fixed ? 'div' : 'button');
+      if (!fixed) control.type = 'button';
+      control.className = fixed ? 'sensor-key sensor-fixed' : `sensor-key${sensor.enabled ? '' : ' sensor-off'}`;
+      control.style.setProperty('--sensor-color', sensor.color);
       const swatch = document.createElement('span');
       swatch.className = 'sensor-swatch';
       const label = document.createElement('span');
       label.textContent = sensor.label;
-      button.append(swatch, label);
-      button.addEventListener('click', () => sensor.toggle());
-      this.controlsEl.appendChild(button);
+      control.append(swatch, label);
+      if (!fixed) control.addEventListener('click', () => sensor.toggle());
+      this.controlsEl.appendChild(control);
     });
     this.renderLists();
   }
