@@ -21,6 +21,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.view.Surface
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -241,10 +242,27 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     override fun onSensorChanged(event: SensorEvent?) {
         if (event?.sensor?.type != Sensor.TYPE_ROTATION_VECTOR) return
 
-        val rotation = FloatArray(9)
+        val rawRotation = FloatArray(9)
+        val screenRotation = FloatArray(9)
         val orientation = FloatArray(3)
-        SensorManager.getRotationMatrixFromVector(rotation, event.values)
-        SensorManager.getOrientation(rotation, orientation)
+        SensorManager.getRotationMatrixFromVector(rawRotation, event.values)
+
+        val displayRotation = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            display?.rotation ?: Surface.ROTATION_0
+        } else {
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay.rotation
+        }
+
+        val (axisX, axisY) = when (displayRotation) {
+            Surface.ROTATION_90 -> SensorManager.AXIS_Y to SensorManager.AXIS_MINUS_X
+            Surface.ROTATION_180 -> SensorManager.AXIS_MINUS_X to SensorManager.AXIS_MINUS_Y
+            Surface.ROTATION_270 -> SensorManager.AXIS_MINUS_Y to SensorManager.AXIS_X
+            else -> SensorManager.AXIS_X to SensorManager.AXIS_Y
+        }
+
+        if (!SensorManager.remapCoordinateSystem(rawRotation, axisX, axisY, screenRotation)) return
+        SensorManager.getOrientation(screenRotation, orientation)
 
         var heading = (orientation[0] * 180f / PI.toFloat())
         if (heading < 0f) heading += 360f
