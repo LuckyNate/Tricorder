@@ -1,5 +1,5 @@
 const RADAR_MARGIN_PX = 12;
-const RANGE_OPTIONS = [10, 50, 100, 500, 1000];
+const RANGE_OPTIONS = [20, 50, 100, 500, 1000];
 const MAX_OBSERVATIONS_PER_ROUTER = 24;
 const SOLVER_STEP_METERS = 8;
 const MAX_SOLVER_RADIUS_METERS = 220;
@@ -400,51 +400,8 @@ class WifiSensor extends ScannerSensor {
     const observations = target.observations;
     if (!observations.length) return null;
     const spread = this.observationSpread(observations);
-    const headingSweep = this.headingSweepDegrees(observations);
-    const hasMovementGeometry = spread >= 5;
-    const hasRotationGeometry = this.headingObservations(observations).length >= 3 && headingSweep >= MIN_HEADING_SWEEP_DEGREES;
-    if (!hasMovementGeometry && !hasRotationGeometry) return this.unresolvedCloud(observations);
-    return this.candidateCloud(observations) || this.unresolvedCloud(observations);
-  }
-
-  selectedMassCells(candidates, targetMass) {
-    const selected = [];
-    let mass = 0;
-    for (const candidate of candidates) {
-      selected.push(candidate);
-      mass += candidate.probability;
-      if (mass >= targetMass) break;
-    }
-    return selected;
-  }
-
-  clusterCells(cells) {
-    const byKey = new Map(cells.map(cell => [`${cell.ix},${cell.iy}`, cell]));
-    const visited = new Set();
-    const clusters = [];
-    cells.forEach(cell => {
-      const startKey = `${cell.ix},${cell.iy}`;
-      if (visited.has(startKey)) return;
-      const cluster = [];
-      const queue = [cell];
-      visited.add(startKey);
-      while (queue.length) {
-        const current = queue.pop();
-        cluster.push(current);
-        for (let dx = -1; dx <= 1; dx += 1) {
-          for (let dy = -1; dy <= 1; dy += 1) {
-            if (dx === 0 && dy === 0) continue;
-            const key = `${current.ix + dx},${current.iy + dy}`;
-            if (!visited.has(key) && byKey.has(key)) {
-              visited.add(key);
-              queue.push(byKey.get(key));
-            }
-          }
-        }
-      }
-      clusters.push(cluster);
-    });
-    return clusters;
+    const candidate = spread >= 2.5 ? this.candidateCloud(observations) : null;
+    return candidate || this.unresolvedCloud(observations);
   }
 
   clearTargetLayer(target) {
@@ -452,165 +409,112 @@ class WifiSensor extends ScannerSensor {
       map.removeLayer(target.layer);
       target.layer = null;
     }
-    target.visualLayers = [];
+    if (target.marker) {
+      map.removeLayer(target.marker);
+      target.marker = null;
+    }
   }
 
-  addAnnulusLayers(layers, cloud) {
-    const outer = ringPoints(cloud.centerLat, cloud.centerLng, cloud.outerRadius);
-    const inner = ringPoints(cloud.centerLat, cloud.centerLng, cloud.innerRadius).reverse();
-    layers.push(L.polygon([outer, inner], {
+  renderAnnulus(target, solved) {
+    this.clearTargetLayer(target);
+    const outer = ringPoints(solved.centerLat, solved.centerLng, solved.outerRadius);
+    const inner = ringPoints(solved.centerLat, solved.centerLng, solved.innerRadius).reverse();
+    target.layer = L.polygon([outer, inner], {
       pane: this.paneName,
       stroke: false,
       fillColor: this.color,
-      fillOpacity: 0.045 + cloud.confidence * 0.075,
-      fillRule: 'evenodd',
+      fillOpacity: solved.confidence * 0.65,
       interactive: false
-    }));
+    }).addTo(map);
   }
 
-  addFieldMassLayers(layers, field, targetMass, opacity) {
-    const selected = this.selectedMassCells(field.candidates, targetMass);
-    const clusters = this.clusterCells(selected);
-    clusters.forEach(cluster => {
-      if (cluster.length < 3) {
-        cluster.forEach(cell => {
-          layers.push(L.circle([cell.lat, cell.lng], {
-            pane: this.paneName,
-            radius: SOLVER_STEP_METERS * 0.9,
-            stroke: false,
-            fillColor: this.color,
-            fillOpacity: opacity,
-            interactive: false
-          }));
-        });
-        return;
-      }
-      const hull = convexHull(cluster);
-      if (hull.length < 3) return;
-      layers.push(L.polygon(hull.map(cell => [cell.lat, cell.lng]), {
+  renderField(target, solved) {
+    this.clearTargetLayer(target);
+    const maxProbability = solved.candidates[0]?.probability || 0;
+    if (!maxProbability) return;
+
+    const thresholdOuter = maxProbability * OUTER_CLOUD_MASS;
+    const selected = solved.candidates.filter(candidate => candidate.probability >= thresholdOuter);
+    const hull = convexHull(selected);
+    if (hull.length >= 3) {
+      const latLngs = hull.map(point => [point.lat, point.lng]);
+      target.layer = L.polygon(latLngs, {
         pane: this.paneName,
         stroke: false,
         fillColor: this.color,
-        fillOpacity: opacity,
-        smoothFactor: 1.4,
+        fillOpacity: 0.12 + solved.confidence * 0.52,
         interactive: false
-      }));
-    });
+      }).addTo(map);
+    }
+
+    if (solved.confidence >= 0.68) {
+      const best = solved.candidates[0];
+      target.marker = L.circleMarker([best.lat, best.lng], {
+        pane: this.paneName,
+        radius: 3.5,
+        stroke: false,
+        fillColor: this.color,
+        fillOpacity: Math.min(1, 0.45 + solved.confidence * 0.55),
+        interactive: false
+      }).addTo(map);
+    }
   }
 
   renderTarget(target) {
-    if (!this.enabled) {
+    if (!this.enabled) return;
+    const solved = this.solveTarget(target);
+    if (!solved) {
       this.clearTargetLayer(target);
       return;
     }
-    const cloud = this.solveTarget(target);
-    if (!cloud) return;
-    target.cloud = cloud;
-    target.confidence = cloud.confidence;
-    this.clearTargetLayer(target);
-
-    const layers = [];
-    if (cloud.mode === 'annulus') {
-      this.addAnnulusLayers(layers, cloud);
-    } else {
-      this.addFieldMassLayers(layers, cloud, OUTER_CLOUD_MASS, 0.055 + cloud.confidence * 0.09);
-      this.addFieldMassLayers(layers, cloud, INNER_CLOUD_MASS, 0.10 + cloud.confidence * 0.18);
-      if (cloud.confidence >= 0.68 && cloud.candidates.length) {
-        const best = cloud.candidates[0];
-        layers.push(L.circleMarker([best.lat, best.lng], {
-          pane: this.paneName,
-          radius: 2.5 + cloud.confidence * 2,
-          stroke: false,
-          fillColor: '#c8e1ff',
-          fillOpacity: 0.35 + cloud.confidence * 0.5,
-          interactive: false
-        }));
-      }
-    }
-
-    target.visualLayers = layers;
-    target.layer = L.layerGroup(layers).addTo(map);
+    if (solved.mode === 'annulus') this.renderAnnulus(target, solved);
+    else this.renderField(target, solved);
   }
 
-  orderLayers() {
-    if (!this.enabled) return;
-    [...this.targets.values()]
-      .filter(target => target.visualLayers?.length)
-      .sort((a, b) => a.confidence - b.confidence)
-      .forEach(target => {
-        target.visualLayers.forEach(layer => {
-          if (typeof layer.bringToFront === 'function') layer.bringToFront();
-        });
-      });
-  }
+  ingest(scan) {
+    if (!scan || !scan.bssid || !Number.isFinite(scan.latitude) || !Number.isFinite(scan.longitude)) return;
+    const timestamp = Number(scan.timestamp) || Date.now();
+    const target = this.targets.get(scan.bssid) || {
+      bssid: scan.bssid,
+      ssid: scan.ssid || '',
+      observations: [],
+      layer: null,
+      marker: null,
+      lastObservationTimestamp: 0
+    };
 
-  ingest(observations) {
-    if (!Array.isArray(observations)) return;
-    observations.forEach(raw => {
-      const bssid = String(raw.bssid || '').toLowerCase();
-      const timestamp = Number(raw.timestamp);
-      if (!bssid || !Number.isFinite(timestamp)) return;
+    if (timestamp <= target.lastObservationTimestamp) return;
 
-      let target = this.targets.get(bssid);
-      if (!target) {
-        target = {
-          bssid,
-          ssid: String(raw.ssid || ''),
-          observations: [],
-          cloud: null,
-          confidence: 0,
-          layer: null,
-          visualLayers: [],
-          lastObservationTimestamp: -Infinity
-        };
-        this.targets.set(bssid, target);
-      }
-
-      if (timestamp <= target.lastObservationTimestamp) return;
-      target.lastObservationTimestamp = timestamp;
-      target.ssid = String(raw.ssid || target.ssid || '');
-      target.observations.push({
-        bssid,
-        ssid: target.ssid,
-        rssi: Number(raw.rssi),
-        frequency: Number(raw.frequency),
-        timestamp,
-        latitude: Number(raw.latitude),
-        longitude: Number(raw.longitude),
-        accuracy: Number(raw.accuracy) || 25,
-        heading: Number.isFinite(Number(raw.heading)) ? Number(raw.heading) : null,
-        headingSource: String(raw.headingSource || 'none'),
-        headingAccuracy: Number(raw.headingAccuracy) || 0
-      });
-
-      if (target.observations.length > MAX_OBSERVATIONS_PER_ROUTER) {
-        target.observations.splice(0, target.observations.length - MAX_OBSERVATIONS_PER_ROUTER);
-      }
-      this.dirtyTargets.add(bssid);
+    target.ssid = scan.ssid || target.ssid;
+    target.lastObservationTimestamp = timestamp;
+    target.observations.push({
+      latitude: Number(scan.latitude),
+      longitude: Number(scan.longitude),
+      accuracy: Number(scan.accuracy),
+      rssi: Number(scan.rssi),
+      frequency: Number(scan.frequency),
+      timestamp,
+      heading: Number.isFinite(Number(scan.heading)) ? Number(scan.heading) : null,
+      headingAccuracy: Number(scan.headingAccuracy) || 0,
+      headingSource: scan.headingSource || 'none'
     });
-
-    const visible = [...this.targets.values()].filter(target => target.observations.length).length;
-    if (visible) statusEl.textContent = `${visible} Wi-Fi targets`;
+    if (target.observations.length > MAX_OBSERVATIONS_PER_ROUTER) target.observations.shift();
+    this.targets.set(scan.bssid, target);
+    this.dirtyTargets.add(scan.bssid);
   }
 
   frame() {
     if (!this.enabled || !this.dirtyTargets.size) return;
-    this.dirtyTargets.forEach(bssid => {
-      const target = this.targets.get(bssid);
-      if (target?.observations.length) this.renderTarget(target);
-    });
+    const dirty = Array.from(this.dirtyTargets);
     this.dirtyTargets.clear();
-    this.orderLayers();
+    dirty.forEach(bssid => {
+      const target = this.targets.get(bssid);
+      if (target) this.renderTarget(target);
+    });
   }
 }
 
 const sensorRegistry = new Map();
-
-function registerSensor(sensor) {
-  sensorRegistry.set(sensor.id, sensor);
-  renderSensorControls();
-  return sensor;
-}
 
 function renderSensorControls() {
   if (!sensorControlsEl) return;
@@ -618,156 +522,143 @@ function renderSensorControls() {
   sensorRegistry.forEach(sensor => {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'sensor-toggle';
+    button.className = `sensor-toggle${sensor.enabled ? ' active' : ''}`;
+    button.style.setProperty('--sensor-color', sensor.color);
     button.textContent = sensor.label;
-    button.style.background = sensor.color;
     button.setAttribute('aria-pressed', String(sensor.enabled));
-    button.setAttribute('aria-label', `${sensor.enabled ? 'Hide' : 'Show'} ${sensor.label}`);
     button.addEventListener('click', () => sensor.toggle());
     sensorControlsEl.appendChild(button);
   });
 }
 
+function registerSensor(sensor) {
+  if (!(sensor instanceof ScannerSensor)) return null;
+  sensorRegistry.set(sensor.id, sensor);
+  renderSensorControls();
+  return sensor;
+}
+
 const wifiSensor = registerSensor(new WifiSensor());
 
-function rangeLabel(meters) {
-  return meters >= 1000 ? `${meters / 1000} km radius` : `${meters} m radius`;
+function rangeZoomForMeters(meters) {
+  if (!deviceLocation) return 18;
+  const mapEl = document.getElementById('map');
+  const width = Math.max(240, mapEl?.clientWidth || window.innerWidth || 360);
+  const usableRadiusPx = Math.max(60, width / 2 - RADAR_MARGIN_PX);
+  const metersPerPixel = meters / usableRadiusPx;
+  const latitudeRadians = deviceLocation.latitude * Math.PI / 180;
+  return Math.log2((156543.03392 * Math.cos(latitudeRadians)) / metersPerPixel);
 }
 
-function fitToRange(latlng) {
-  const container = map.getContainer();
-  const width = container.clientWidth;
-  const height = container.clientHeight;
-  if (!width || !height) return;
-  const usableDiameter = Math.max(1, Math.min(width, height) - (RADAR_MARGIN_PX * 2));
-  const padX = Math.max(RADAR_MARGIN_PX, (width - usableDiameter) / 2);
-  const padY = Math.max(RADAR_MARGIN_PX, (height - usableDiameter) / 2);
-  const bounds = L.latLng(latlng.lat, latlng.lng).toBounds(currentRangeMeters * 2);
-  map.fitBounds(bounds, {
-    paddingTopLeft: [padX, padY],
-    paddingBottomRight: [padX, padY],
-    animate: false
-  });
-}
-
-function refitRadar() {
-  if (currentMode !== '2d' || !deviceLocation) return;
-  map.invalidateSize(false);
-  fitToRange(L.latLng(deviceLocation.latitude, deviceLocation.longitude));
-}
-
-function setRange(meters) {
-  currentRangeMeters = RANGE_OPTIONS.includes(meters) ? meters : RANGE_OPTIONS[0];
-  rangeEl.textContent = rangeLabel(currentRangeMeters);
-  rangeEl.setAttribute('aria-label', `Radar range ${rangeLabel(currentRangeMeters)}. Tap to change.`);
+function applyRange() {
+  if (!deviceLocation) return;
+  map.setView([deviceLocation.latitude, deviceLocation.longitude], rangeZoomForMeters(currentRangeMeters), { animate: false });
   if (rangeRing) rangeRing.setRadius(currentRangeMeters);
-  requestAnimationFrame(refitRadar);
+  if (rangeEl) rangeEl.textContent = `${currentRangeMeters} m`;
 }
 
-function toggleRange() {
+function cycleRange() {
   const index = RANGE_OPTIONS.indexOf(currentRangeMeters);
-  setRange(RANGE_OPTIONS[(index + 1) % RANGE_OPTIONS.length]);
+  currentRangeMeters = RANGE_OPTIONS[(index + 1) % RANGE_OPTIONS.length];
+  applyRange();
 }
 
 function setMode(mode) {
   currentMode = mode === '3d' ? '3d' : '2d';
-  const is3d = currentMode === '3d';
-  document.body.classList.toggle('mode-3d', is3d);
-  modeToggle.setAttribute('aria-pressed', String(is3d));
-  mode3d.classList.toggle('active', is3d);
-  mode2d.classList.toggle('active', !is3d);
-  if (!is3d) {
-    requestAnimationFrame(() => {
-      map.invalidateSize(false);
-      refitRadar();
-    });
-  }
+  document.body.dataset.mode = currentMode;
+  if (mode2d) mode2d.classList.toggle('active', currentMode === '2d');
+  if (mode3d) mode3d.classList.toggle('active', currentMode === '3d');
 }
 
-rangeEl.addEventListener('click', toggleRange);
-modeToggle.addEventListener('click', () => setMode(currentMode === '2d' ? '3d' : '2d'));
+function applyHeading() {
+  const mapEl = document.getElementById('map');
+  if (!mapEl) return;
+  const heading = Number.isFinite(currentHeading) ? currentHeading : 0;
+  mapEl.style.transform = `rotate(${-heading}deg) scale(1.42)`;
+}
 
-function updateLocation(latitude, longitude, accuracy, bearing, speed) {
-  const latlng = L.latLng(latitude, longitude);
+function updateLocation(location) {
+  if (!location || !Number.isFinite(location.latitude) || !Number.isFinite(location.longitude)) return;
   deviceLocation = {
-    latitude,
-    longitude,
-    accuracy: Number(accuracy) || 1,
-    bearing: Number.isFinite(Number(bearing)) ? Number(bearing) : null,
-    speed: Number(speed) || 0
+    latitude: Number(location.latitude),
+    longitude: Number(location.longitude),
+    accuracy: Number(location.accuracy) || 0,
+    timestamp: Number(location.timestamp) || Date.now()
   };
 
-  if (!deviceMarker) {
-    deviceMarker = L.marker(latlng, { icon: deviceIcon, interactive: false }).addTo(map);
-    rangeRing = L.circle(latlng, {
-      radius: currentRangeMeters,
-      className: 'range-ring',
-      interactive: false
-    }).addTo(map);
-    accuracyRing = L.circle(latlng, {
-      radius: Math.max(1, accuracy || 1),
-      className: 'accuracy-ring',
+  const latLng = [deviceLocation.latitude, deviceLocation.longitude];
+  if (!deviceMarker) deviceMarker = L.marker(latLng, { icon: deviceIcon, interactive: false }).addTo(map);
+  else deviceMarker.setLatLng(latLng);
+
+  if (!accuracyRing) {
+    accuracyRing = L.circle(latLng, {
+      radius: Math.max(1, deviceLocation.accuracy),
+      stroke: false,
+      fillColor: '#ffffff',
+      fillOpacity: 0.08,
       interactive: false
     }).addTo(map);
   } else {
-    deviceMarker.setLatLng(latlng);
-    rangeRing.setLatLng(latlng).setRadius(currentRangeMeters);
-    accuracyRing.setLatLng(latlng).setRadius(Math.max(1, accuracy || 1));
+    accuracyRing.setLatLng(latLng);
+    accuracyRing.setRadius(Math.max(1, deviceLocation.accuracy));
   }
 
-  if (currentMode === '2d') {
-    if (!hasInitialFix) {
-      fitToRange(latlng);
-      hasInitialFix = true;
-    } else {
-      map.panTo(latlng, { animate: true, duration: 0.35, noMoveStart: true });
-    }
+  if (!rangeRing) {
+    rangeRing = L.circle(latLng, {
+      radius: currentRangeMeters,
+      color: '#ffffff',
+      weight: 1,
+      opacity: 0.45,
+      fill: false,
+      interactive: false
+    }).addTo(map);
+  } else {
+    rangeRing.setLatLng(latLng);
   }
-  statusEl.textContent = accuracy ? `±${Math.round(accuracy)} m` : 'Location active';
+
+  if (!hasInitialFix) {
+    hasInitialFix = true;
+    applyRange();
+  } else {
+    map.panTo(latLng, { animate: false });
+  }
 }
 
-function updateHeading(heading, accuracy, source) {
-  const numericHeading = Number(heading);
-  if (!Number.isFinite(numericHeading)) return;
-  currentHeading = ((numericHeading % 360) + 360) % 360;
-  currentHeadingAccuracy = Number(accuracy) || 0;
-  currentHeadingSource = String(source || 'none');
+function updateHeading(heading) {
+  if (!heading) return;
+  const value = Number(heading.heading);
+  if (!Number.isFinite(value)) return;
+  currentHeading = value;
+  currentHeadingAccuracy = Number(heading.accuracy) || 0;
+  currentHeadingSource = heading.source || 'none';
+  applyHeading();
 }
 
-function scannerFrame(timestamp) {
-  requestAnimationFrame(scannerFrame);
-  if (timestamp - lastRenderTime < RENDER_INTERVAL_MS) return;
-  lastRenderTime = timestamp;
-  sensorRegistry.forEach(sensor => sensor.frame({
-    timestamp,
-    location: deviceLocation,
-    heading: currentHeading,
-    headingAccuracy: currentHeadingAccuracy,
-    headingSource: currentHeadingSource
-  }));
+function frame(timestamp) {
+  if (timestamp - lastRenderTime >= RENDER_INTERVAL_MS) {
+    lastRenderTime = timestamp;
+    sensorRegistry.forEach(sensor => sensor.frame(timestamp));
+  }
+  requestAnimationFrame(frame);
 }
 
-window.addEventListener('resize', () => requestAnimationFrame(refitRadar));
-
-setRange(currentRangeMeters);
-requestAnimationFrame(scannerFrame);
+if (rangeEl) rangeEl.addEventListener('click', cycleRange);
+if (modeToggle) modeToggle.addEventListener('click', () => setMode(currentMode === '2d' ? '3d' : '2d'));
+setMode('2d');
+renderSensorControls();
+requestAnimationFrame(frame);
 
 window.Tricorder = {
-  onLocation(latitude, longitude, accuracy, bearing, speed) {
-    updateLocation(Number(latitude), Number(longitude), Number(accuracy), Number(bearing), Number(speed));
-  },
-  onHeading(heading, accuracy, source) {
-    updateHeading(Number(heading), Number(accuracy), source);
-  },
-  onWifiScan(observations) {
-    wifiSensor.ingest(observations);
+  onLocation: updateLocation,
+  onHeading: updateHeading,
+  onWifiScan(scan) {
+    if (Array.isArray(scan)) scan.forEach(item => wifiSensor.ingest(item));
+    else wifiSensor.ingest(scan);
   },
   onStatus(message) {
-    statusEl.textContent = message;
+    if (statusEl) statusEl.textContent = String(message || '');
   },
-  registerSensor(sensor) {
-    return registerSensor(sensor);
-  },
+  registerSensor,
   getSensor(id) {
     return sensorRegistry.get(id) || null;
   }
