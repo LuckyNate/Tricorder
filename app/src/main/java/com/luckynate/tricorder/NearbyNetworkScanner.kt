@@ -102,7 +102,7 @@ class NearbyNetworkScanner(private val context: Context) {
                 put("detail", observation.detail)
                 put("persistent", observation.persistent)
                 put("timestamp", observation.timestampNanos / 1_000_000L)
-                put("ageMs", ((now - observation.timestampNanos) / 1_000_000_000L).coerceAtLeast(0L) * 1000L)
+                put("ageMs", ((now - observation.timestampNanos) / 1_000_000L).coerceAtLeast(0L))
             })
         }
         return output
@@ -319,12 +319,22 @@ class NearbyNetworkScanner(private val context: Context) {
 
     private fun recordP2pDevice(device: WifiP2pDevice) {
         val address = device.deviceAddress ?: return
+        val capabilities = buildList {
+            add("status=${device.status}")
+            device.primaryDeviceType?.takeIf { it.isNotBlank() }?.let { add("primary=$it") }
+            device.secondaryDeviceType?.takeIf { it.isNotBlank() }?.let { add("secondary=$it") }
+            if (device.isGroupOwner) add("group-owner")
+            if (device.isServiceDiscoveryCapable) add("service-discovery")
+            if (device.wpsPbcSupported()) add("wps-pbc")
+            if (device.wpsKeypadSupported()) add("wps-keypad")
+            if (device.wpsDisplaySupported()) add("wps-display")
+        }
         record(
             id = "p2p:${address.lowercase()}",
             name = device.deviceName ?: "Wi-Fi Direct device",
             source = "wifi-direct",
             kind = "peer",
-            detail = "status=${device.status}"
+            detail = capabilities.joinToString(" | ")
         )
     }
 
