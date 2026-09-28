@@ -12,7 +12,20 @@
     <section id="viewPane">
       <div id="mapRotator"><div id="map"></div></div>
       <div id="phoneReticle" aria-hidden="true"></div>
-      <div id="threeDView" hidden>3D SENSOR VIEW</div>
+      <div id="threeDView" hidden>
+        <div id="spatialScene" aria-label="3D sensor sphere">
+          <div class="spatial-sphere spatial-sphere-outer" aria-hidden="true"></div>
+          <div class="spatial-sphere spatial-sphere-mid" aria-hidden="true"></div>
+          <div class="spatial-equator" aria-hidden="true"></div>
+          <div class="spatial-meridian spatial-meridian-a" aria-hidden="true"></div>
+          <div class="spatial-meridian spatial-meridian-b" aria-hidden="true"></div>
+          <div id="spatialTargets"></div>
+          <div class="spatial-observer" aria-hidden="true"></div>
+          <div class="spatial-readout spatial-readout-heading">HDG <span id="spatialHeading">0°</span></div>
+          <div class="spatial-readout spatial-readout-pitch">EL <span id="spatialPitch">0°</span></div>
+          <div class="spatial-readout spatial-readout-range">R <span id="spatialRange">20 m</span></div>
+        </div>
+      </div>
       <div id="startupFault" hidden></div>
     </section>
 
@@ -57,6 +70,7 @@
     }());
   </script>
   <script src="scanner-core.js"></script>
+  <script src="spatial-view.js"></script>
   <script src="state-recovery.js"></script>
   <script src="scanner-sensors.js"></script>
   <script src="radio-sensors.js"></script>
