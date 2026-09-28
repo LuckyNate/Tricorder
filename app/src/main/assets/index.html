@@ -11,30 +11,31 @@
 <body>
   <main id="app">
     <section id="viewPane">
-      <div id="map"></div>
-      <div id="threeDView" aria-hidden="true"></div>
+      <div id="mapRotator"><div id="map"></div></div>
+      <div id="mapFallback" hidden></div>
+      <div id="phoneReticle" aria-hidden="true"></div>
+      <div id="threeDView" hidden>3D SENSOR VIEW</div>
     </section>
 
     <section id="controls">
       <div id="controlTop">
         <div id="controlStatus">
-          <div id="status">Finding location</div>
-          <button id="range" type="button" aria-label="Change radar range">100 m radius</button>
+          <div id="status">Starting scanner</div>
+          <button id="range" type="button" aria-label="Change radar range">20 m radius</button>
         </div>
         <div id="sensorControls" aria-label="Scanner sensor layers"></div>
+        <div id="deviceLists" aria-label="Detected devices"></div>
       </div>
 
       <button id="modeToggle" type="button" aria-pressed="false">
-        <span id="mode3d">3D</span>
-        <span class="mode-divider">/</span>
-        <span id="mode2d" class="active">2D</span>
+        <span id="mode3d">3D</span><span class="mode-divider">/</span><span id="mode2d" class="active">2D</span>
       </button>
     </section>
   </main>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="scanner-core.js"></script>
+  <script src="scanner-sensors.js"></script>
   <script src="app.js"></script>
-  <script src="bluetooth-sensor.js"></script>
-  <script src="nearby-network-sensor.js"></script>
 </body>
 </html>
