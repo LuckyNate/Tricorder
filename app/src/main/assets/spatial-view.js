@@ -103,22 +103,68 @@
       return { east, north, up, horizontal, distance, bearing, elevation };
     }
 
+    degreesToRadians(value) {
+      return value * Math.PI / 180;
+    }
+
+    toCameraSpace(relative) {
+      if (!relative) return null;
+
+      let x = relative.east;
+      let y = relative.up;
+      let z = relative.north;
+
+      const heading = this.degreesToRadians(this.pose.heading || 0);
+      const pitch = this.degreesToRadians(this.pose.pitch || 0);
+      const roll = this.degreesToRadians(this.pose.roll || 0);
+
+      {
+        const sin = Math.sin(heading);
+        const cos = Math.cos(heading);
+        const nx = cos * x - sin * z;
+        const nz = sin * x + cos * z;
+        x = nx;
+        z = nz;
+      }
+
+      {
+        const sin = Math.sin(pitch);
+        const cos = Math.cos(pitch);
+        const ny = cos * y - sin * z;
+        const nz = sin * y + cos * z;
+        y = ny;
+        z = nz;
+      }
+
+      {
+        const sin = Math.sin(roll);
+        const cos = Math.cos(roll);
+        const nx = cos * x + sin * y;
+        const ny = -sin * x + cos * y;
+        x = nx;
+        y = ny;
+      }
+
+      return { x, y, z };
+    }
+
     project(relative) {
       if (!relative || !this.scene) return null;
+
+      const camera = this.toCameraSpace(relative);
+      if (!camera || camera.z <= 0.15) return null;
+
       const width = this.scene.clientWidth || 320;
       const height = this.scene.clientHeight || 320;
-      const yaw = angularDifferenceDegrees(relative.bearing, this.pose.heading);
-      const elevation = relative.elevation - this.pose.pitch;
-      const radius = Math.min(width, height) * 0.43;
-      const radialDistance = clamp(relative.distance / Math.max(1, this.rangeMeters), 0, 1.15) * radius;
-      const yawRad = yaw * Math.PI / 180;
-      const elevationRad = elevation * Math.PI / 180;
-      const horizontalRadius = radialDistance * Math.cos(elevationRad);
+      const verticalFov = 68 * Math.PI / 180;
+      const focal = (height * 0.5) / Math.tan(verticalFov * 0.5);
+
       return {
-        x: width / 2 + Math.sin(yawRad) * horizontalRadius,
-        y: height / 2 - Math.sin(elevationRad) * radialDistance - Math.cos(yawRad) * horizontalRadius * 0.18,
-        depth: Math.cos(yawRad) * Math.cos(elevationRad),
-        distance: relative.distance
+        x: width * 0.5 + (camera.x / camera.z) * focal,
+        y: height * 0.5 - (camera.y / camera.z) * focal,
+        depth: camera.z,
+        focal,
+        camera
       };
     }
 
@@ -134,12 +180,31 @@
         if (!sensor.enabled) return;
         sensor.targets.forEach(target => {
           if (!target.position) return;
+
           const relative = this.relativePosition(target);
-          if (!relative || relative.distance > this.rangeMeters + (target.uncertaintyMeters || 0)) return;
+          if (!relative) return;
+
+          const uncertaintyMeters = target.uncertaintyMeters || 5;
+          if (relative.distance > this.rangeMeters + uncertaintyMeters) return;
+
           const projected = this.project(relative);
           if (!projected) return;
-          const pxPerMeter = Math.min(this.scene.clientWidth || 320, this.scene.clientHeight || 320) * 0.43 / Math.max(1, this.rangeMeters);
-          const radiusPx = clamp((target.uncertaintyMeters || 5) * pxPerMeter, 6, 110);
+
+          const radiusPx = clamp(
+            (uncertaintyMeters / Math.max(projected.depth, 0.75)) * projected.focal,
+            6,
+            120
+          );
+
+          const width = this.scene.clientWidth || 320;
+          const height = this.scene.clientHeight || 320;
+          if (
+            projected.x < -radiusPx * 2 ||
+            projected.x > width + radiusPx * 2 ||
+            projected.y < -radiusPx * 2 ||
+            projected.y > height + radiusPx * 2
+          ) return;
+
           const sphere = document.createElement('div');
           sphere.className = 'spatial-target-sphere';
           sphere.style.setProperty('--sensor-color', sensor.color);
@@ -148,16 +213,17 @@
           sphere.style.left = `${projected.x - radiusPx}px`;
           sphere.style.top = `${projected.y - radiusPx}px`;
           sphere.style.opacity = String(clamp(0.18 + (target.confidence || 0) * 0.66, 0.18, 0.86));
-          sphere.style.zIndex = String(Math.round((projected.depth + 1) * 50));
+          sphere.style.zIndex = String(Math.round(Math.max(1, 10000 - projected.depth * 100)));
           sphere.title = `${target.name || target.id} · ${Math.round(relative.distance)}m · ${relative.up >= 0 ? '+' : ''}${Math.round(relative.up)}m vertical`;
           this.targetLayer.appendChild(sphere);
+
           if ((target.confidence || 0) >= 0.62) {
             const dot = document.createElement('div');
             dot.className = 'spatial-target-dot';
             dot.style.setProperty('--sensor-color', sensor.color);
             dot.style.left = `${projected.x - 4}px`;
             dot.style.top = `${projected.y - 4}px`;
-            dot.style.zIndex = String(Math.round((projected.depth + 1) * 50 + 1));
+            dot.style.zIndex = String(Math.round(Math.max(2, 10001 - projected.depth * 100)));
             this.targetLayer.appendChild(dot);
           }
         });
