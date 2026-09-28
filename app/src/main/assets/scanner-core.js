@@ -75,6 +75,7 @@ class RadarView {
     this.location = null;
     this.heading = 0;
     this.zoom = 18;
+    this.scale = 1;
     this.tileSize = 256;
     this.mapEl = document.getElementById('map');
     this.rotatorEl = document.getElementById('mapRotator');
@@ -128,12 +129,12 @@ class RadarView {
     const desiredMetersPerPixel = Math.max(0.05, this.rangeMeters / (minDimension * 0.36));
     const latitudeRadians = this.location.latitude * Math.PI / 180;
     const baseMetersPerPixel = 156543.03392 * Math.cos(latitudeRadians);
-    return Math.max(3, Math.min(19, Math.round(Math.log2(baseMetersPerPixel / desiredMetersPerPixel))));
+    return Math.max(3, Math.log2(baseMetersPerPixel / desiredMetersPerPixel));
   }
 
   metersPerPixel() {
     if (!this.location) return 1;
-    return 156543.03392 * Math.cos(this.location.latitude * Math.PI / 180) / Math.pow(2, this.zoom);
+    return 156543.03392 * Math.cos(this.location.latitude * Math.PI / 180) / (Math.pow(2, this.zoom) * this.scale);
   }
 
   setLocation(latitude, longitude, accuracy) {
@@ -171,14 +172,20 @@ class RadarView {
       return;
     }
 
-    this.zoom = this.zoomForRange();
+    const visualZoom = this.zoomForRange();
+    this.zoom = Math.max(3, Math.min(19, Math.floor(visualZoom)));
+    this.scale = Math.pow(2, visualZoom - this.zoom);
+
     const centerX = this.lonToWorldX(this.location.longitude, this.zoom);
     const centerY = this.latToWorldY(this.location.latitude, this.zoom);
-    const startX = Math.floor((centerX - width / 2) / this.tileSize) - 1;
-    const endX = Math.floor((centerX + width / 2) / this.tileSize) + 1;
-    const startY = Math.floor((centerY - height / 2) / this.tileSize) - 1;
-    const endY = Math.floor((centerY + height / 2) / this.tileSize) + 1;
+    const viewportWidthAtTileScale = width / this.scale;
+    const viewportHeightAtTileScale = height / this.scale;
+    const startX = Math.floor((centerX - viewportWidthAtTileScale / 2) / this.tileSize) - 1;
+    const endX = Math.floor((centerX + viewportWidthAtTileScale / 2) / this.tileSize) + 1;
+    const startY = Math.floor((centerY - viewportHeightAtTileScale / 2) / this.tileSize) - 1;
+    const endY = Math.floor((centerY + viewportHeightAtTileScale / 2) / this.tileSize) + 1;
     const tileCount = Math.pow(2, this.zoom);
+    const displayTileSize = this.tileSize * this.scale;
 
     const visibleTiles = new Set();
     for (let y = startY; y <= endY; y += 1) {
@@ -197,8 +204,10 @@ class RadarView {
           this.tiles.set(key, img);
           this.tileLayer.appendChild(img);
         }
-        img.style.left = `${x * this.tileSize - centerX + width / 2}px`;
-        img.style.top = `${y * this.tileSize - centerY + height / 2}px`;
+        img.style.width = `${displayTileSize}px`;
+        img.style.height = `${displayTileSize}px`;
+        img.style.left = `${(x * this.tileSize - centerX) * this.scale + width / 2}px`;
+        img.style.top = `${(y * this.tileSize - centerY) * this.scale + height / 2}px`;
       }
     }
     this.tiles.forEach((img, key) => {
@@ -221,8 +230,8 @@ class RadarView {
     const height = this.mapEl.clientHeight || 320;
     const centerX = this.lonToWorldX(this.location.longitude, this.zoom);
     const centerY = this.latToWorldY(this.location.latitude, this.zoom);
-    const x = this.lonToWorldX(position.longitude, this.zoom) - centerX + width / 2;
-    const y = this.latToWorldY(position.latitude, this.zoom) - centerY + height / 2;
+    const x = (this.lonToWorldX(position.longitude, this.zoom) - centerX) * this.scale + width / 2;
+    const y = (this.latToWorldY(position.latitude, this.zoom) - centerY) * this.scale + height / 2;
     return { x, y };
   }
 
