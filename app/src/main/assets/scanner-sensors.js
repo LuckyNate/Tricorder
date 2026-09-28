@@ -1,3 +1,4 @@
+(() => {
 const { Observation, Sensor } = window.ScannerCore;
 
 function weightedCenter(observations) {
@@ -151,3 +152,4 @@ class NetworkSensor extends Sensor {
 }
 
 window.ScannerSensors = { LocationSensor, HeadingSensor, WifiSensor, BluetoothSensor, NetworkSensor };
+})();
