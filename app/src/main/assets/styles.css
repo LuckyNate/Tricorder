@@ -25,6 +25,7 @@ button { font:inherit; }
 #controlTop { display:flex; flex-direction:column; gap:10px; }
 #controlStatus { display:flex; align-items:center; justify-content:space-between; gap:12px; }
 #status { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#b6f6d6; }
+#sourceStatus { color:#8dc7ae; font-size:11px; line-height:1.4; }
 #range,#modeToggle { border:1px solid #5ba983; background:#10251d; color:#dcffec; border-radius:7px; padding:8px 10px; }
 #sensorControls { display:flex; flex-wrap:wrap; gap:7px; }
 .sensor-key { --sensor-color:#fff; border:1px solid var(--sensor-color); background:#0c1814; color:var(--sensor-color); border-radius:7px; padding:7px 9px; display:flex; align-items:center; gap:7px; }

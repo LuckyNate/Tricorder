@@ -13,24 +13,30 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.location.Location
 import android.os.Build
 import android.os.SystemClock
 import org.json.JSONArray
 import org.json.JSONObject
 
-class BluetoothScanner(private val context: Context) {
+class BluetoothScanner(private val context: Context, private val observerPose: () -> ObserverPose) {
+    data class ObserverPose(
+        val latitude: Double?, val longitude: Double?, val accuracy: Float?,
+        val heading: Float?, val headingAccuracy: Int, val headingSource: String,
+        val capturedAtNanos: Long
+    )
     private data class Observation(
         val address: String,
         val name: String,
         val rssi: Int?,
         val timestampNanos: Long,
         val source: String,
-        val confirmedNearby: Boolean
+        val confirmedNearby: Boolean,
+        val pose: ObserverPose?
     )
 
     private val bluetoothManager = context.getSystemService(BluetoothManager::class.java)
     private val latest = LinkedHashMap<String, Observation>()
+    private val bondedAddresses = HashSet<String>()
     private var bleScanning = false
     private var running = false
     private var classicReceiverRegistered = false
@@ -94,12 +100,7 @@ class BluetoothScanner(private val context: Context) {
         }
     }
 
-    fun frame(
-        location: Location?,
-        heading: Float?,
-        headingAccuracy: Int,
-        headingSource: String
-    ): JSONArray {
+    fun frame(): JSONArray {
         val adapter = bluetoothManager?.adapter
         if (running && adapter != null) {
             refreshBondedDevices(adapter)
@@ -119,20 +120,25 @@ class BluetoothScanner(private val context: Context) {
                 continue
             }
 
-            val sampleLocation = location ?: continue
             output.put(JSONObject().apply {
                 put("address", observation.address)
                 put("name", observation.name)
                 observation.rssi?.let { put("rssi", it) }
                 put("timestamp", observation.timestampNanos / 1_000_000L)
+                put("ageMs", ((now - observation.timestampNanos) / 1_000_000_000L).coerceAtLeast(0L) * 1000L)
                 put("source", observation.source)
                 put("confirmedNearby", observation.confirmedNearby)
-                put("latitude", sampleLocation.latitude)
-                put("longitude", sampleLocation.longitude)
-                put("accuracy", sampleLocation.accuracy)
-                heading?.let { put("heading", it) }
-                put("headingSource", headingSource)
-                put("headingAccuracy", headingAccuracy)
+                put("bonded", observation.address in bondedAddresses)
+                observation.pose?.takeIf { kotlin.math.abs(it.capturedAtNanos - observation.timestampNanos) <= 2_000_000_000L }?.let { pose ->
+                    if (pose.latitude != null && pose.longitude != null) {
+                        put("latitude", pose.latitude)
+                        put("longitude", pose.longitude)
+                        pose.accuracy?.let { put("accuracy", it) }
+                    }
+                    pose.heading?.let { put("heading", it) }
+                    put("headingSource", pose.headingSource)
+                    put("headingAccuracy", pose.headingAccuracy)
+                }
             })
         }
 
@@ -195,10 +201,12 @@ class BluetoothScanner(private val context: Context) {
     private fun refreshBondedDevices(adapter: BluetoothAdapter) {
         if (!hasPermission()) return
         try {
+            bondedAddresses.clear()
             adapter.bondedDevices.orEmpty().forEach { device ->
                 val name = device.name ?: "Bluetooth"
                 if (isAutomotive(device, name)) return@forEach
                 val address = device.address?.lowercase() ?: return@forEach
+                bondedAddresses.add(address)
                 val previous = latest[address]
                 latest[address] = Observation(
                     address = address,
@@ -206,7 +214,8 @@ class BluetoothScanner(private val context: Context) {
                     rssi = previous?.rssi,
                     timestampNanos = previous?.timestampNanos ?: SystemClock.elapsedRealtimeNanos(),
                     source = previous?.source?.takeIf { it != SOURCE_BONDED } ?: SOURCE_BONDED,
-                    confirmedNearby = previous?.confirmedNearby ?: false
+                    confirmedNearby = previous?.confirmedNearby ?: false,
+                    pose = previous?.pose
                 )
             }
         } catch (_: SecurityException) {
@@ -226,7 +235,8 @@ class BluetoothScanner(private val context: Context) {
                 rssi = result.rssi,
                 timestampNanos = result.timestampNanos,
                 source = SOURCE_BLE,
-                confirmedNearby = true
+                confirmedNearby = true,
+                pose = observerPose()
             )
         } catch (_: SecurityException) {
         }
@@ -259,7 +269,8 @@ class BluetoothScanner(private val context: Context) {
                 rssi = rssi,
                 timestampNanos = SystemClock.elapsedRealtimeNanos(),
                 source = SOURCE_CLASSIC,
-                confirmedNearby = true
+                confirmedNearby = true,
+                pose = observerPose()
             )
         } catch (_: SecurityException) {
         }

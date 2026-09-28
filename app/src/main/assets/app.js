@@ -55,6 +55,19 @@
     });
 
     const engine = new ScannerEngine(radar);
+    const sourceStatus = document.getElementById('sourceStatus');
+    const sourceState = { location: 'location waiting', wifi: 'Wi-Fi waiting', bluetooth: 'Bluetooth waiting', network: 'network waiting' };
+    const availability = {};
+    let receivedWifiSnapshot = false;
+    function showSources() {
+      if (receivedWifiSnapshot && !availability.wifi) {
+        const wifiTargets = [...wifiSensor.targets.values()];
+        const fresh = wifiTargets.some(target => Date.now() - target.lastReceivedAt + target.sampleAgeMs < 5000);
+        sourceState.wifi = `Wi-Fi ${wifiTargets.length} (${fresh ? 'fresh' : 'cached / waiting for new scan'})`;
+      }
+      if (sourceStatus) sourceStatus.textContent = Object.keys(sourceState)
+        .map(id => availability[id] ? `${id}: ${availability[id]}` : sourceState[id]).join(' · ');
+    }
 
     const locationSensor = engine.register(new LocationSensor());
     const headingSensor = engine.register(new HeadingSensor());
@@ -68,23 +81,46 @@
       onLocation(latitude, longitude, accuracy) {
         try {
           locationSensor.ingest(latitude, longitude, accuracy);
-          engine.setStatus(`GPS ±${Math.round(Number(accuracy) || 0)} m`);
+          sourceState.location = `observer ±${Math.round(Number(accuracy) || 0)}m`;
+          showSources();
         } catch (error) { fault(error.message || error); }
       },
       onHeading(heading) {
         try { headingSensor.ingest(heading); } catch (error) { fault(error.message || error); }
       },
       onWifiScan(observations) {
-        try { wifiSensor.ingest(observations); } catch (error) { fault(error.message || error); }
+        try {
+          wifiSensor.ingest(observations);
+          receivedWifiSnapshot = true;
+          if (observations.some(o => Number(o.ageMs) < 5000)) delete availability.wifi;
+          engine.needsRender = true;
+          showSources();
+        } catch (error) { fault(error.message || error); }
       },
       onBluetoothScan(observations) {
-        try { bluetoothSensor.ingest(observations); } catch (error) { fault(error.message || error); }
+        try {
+          bluetoothSensor.ingest(observations);
+          sourceState.bluetooth = `Bluetooth ${bluetoothSensor.targets.size}`;
+          engine.needsRender = true;
+          showSources();
+        } catch (error) { fault(error.message || error); }
       },
       onNearbyNetworkScan(observations) {
-        try { networkSensor.ingest(observations); } catch (error) { fault(error.message || error); }
+        try {
+          networkSensor.ingest(observations);
+          sourceState.network = `network ${networkSensor.targets.size}`;
+          showSources();
+        } catch (error) { fault(error.message || error); }
       },
       onStatus(message) {
         engine.setStatus(String(message || ''));
+      },
+      onSensorAvailability(id, state) {
+        if (Object.prototype.hasOwnProperty.call(sourceState, id)) {
+          if (state) availability[id] = String(state);
+          else delete availability[id];
+          showSources();
+        }
       },
       registerSensor(sensor) { return engine.register(sensor); },
       getSensor(id) { return engine.get(id); }
@@ -92,6 +128,7 @@
 
     engine.refreshControls();
     engine.setStatus('Scanner ready — waiting for sensors');
+    window.setInterval(showSources, 1000);
     engine.start();
   } catch (error) {
     fault(error && error.message ? error.message : error);

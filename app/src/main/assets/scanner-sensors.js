@@ -255,17 +255,19 @@ class RangedRadioSensor extends Sensor {
 
   updateTarget(target) {
     const ranged = target.observations.filter(o => Number.isFinite(o.rssi));
+    const positioned = ranged.filter(o => o.latitude !== null && o.longitude !== null);
     const latest = target.observations[target.observations.length - 1];
     if (!ranged.length) return;
 
-    const spread = observationSpread(ranged);
-    const sweep = headingSweep(ranged);
-    const hasGeometry = ranged.length >= 2 && (spread >= 2 || sweep >= MIN_HEADING_SWEEP_DEGREES);
+    const spread = observationSpread(positioned);
+    const sweep = headingSweep(positioned);
+    const hasGeometry = positioned.length >= 2 && (spread >= 2 || sweep >= MIN_HEADING_SWEEP_DEGREES);
 
     if (hasGeometry) {
       const solved = this.solveDirectionalTarget(target);
       if (solved) {
         target.position = solved.position;
+        target.rangeRegion = null;
         target.uncertaintyMeters = solved.uncertaintyMeters;
         target.confidence = solved.confidence;
         target.directionSpreadMeters = solved.spread;
@@ -274,13 +276,20 @@ class RangedRadioSensor extends Sensor {
       }
     }
 
-    const center = weightedCenter(target.observations);
-    if (!center) return;
-    const ranges = ranged.map(o => this.rangeFromRssi(o.rssi));
+    const center = weightedCenter(positioned);
+    if (!center) {
+      target.position = null;
+      target.rangeRegion = null;
+      target.confidence = 0.08;
+      return;
+    }
+    const ranges = positioned.map(o => this.rangeFromRssi(o.rssi));
     const averageRange = ranges.reduce((a, b) => a + b, 0) / ranges.length;
-    const countConfidence = Math.min(1, target.observations.length / 14);
+    const countConfidence = Math.min(1, positioned.length / 14);
     target.position = center;
-    target.uncertaintyMeters = Math.max(2.5, averageRange * 0.95, latest ? latest.accuracy : 10);
+    const width = Math.max(3, averageRange * 0.5, latest ? latest.accuracy : 10);
+    target.rangeRegion = { center, innerMeters: Math.max(0, averageRange - width), outerMeters: averageRange + width };
+    target.uncertaintyMeters = target.rangeRegion.outerMeters;
     target.confidence = Math.max(0.08, Math.min(0.42, 0.10 + countConfidence * 0.32));
   }
 }
@@ -301,6 +310,8 @@ class WifiSensor extends RangedRadioSensor {
       const target = this.getOrCreateTarget(id, name);
       target.kind = 'router';
       target.detail = `${Number(raw.rssi) || 0} dBm`;
+      target.lastReceivedAt = Date.now();
+      target.sampleAgeMs = Number(raw.ageMs) || 0;
       const observation = new Observation(this.id, id, raw);
       if (observation.timestamp <= target.lastSeen) return;
       target.addObservation(observation);
@@ -326,15 +337,19 @@ class BluetoothSensor extends RangedRadioSensor {
       seen.add(id);
       const target = this.getOrCreateTarget(id, String(raw.name || 'Bluetooth device'));
       target.kind = String(raw.source || 'bluetooth');
-      target.detail = Number.isFinite(Number(raw.rssi)) ? `${Number(raw.rssi)} dBm` : 'paired / unresolved';
+      target.knowledgeOnly = raw.source === 'bonded' && (raw.rssi === null || raw.rssi === undefined);
+      target.detail = raw.rssi !== null && raw.rssi !== undefined && Number.isFinite(Number(raw.rssi))
+        ? `${Number(raw.rssi)} dBm${raw.bonded ? ' · paired' : ''}` : 'paired / unresolved';
+      target.lastReceivedAt = Date.now();
+      target.sampleAgeMs = Number(raw.ageMs) || 0;
       const observation = new Observation(this.id, id, raw);
       if (observation.timestamp <= target.lastSeen && target.observations.length) return;
       target.addObservation(observation);
       if (Number.isFinite(observation.rssi)) {
         this.updateTarget(target);
       } else {
-        const center = weightedCenter(target.observations);
-        if (center) target.position = center;
+        target.position = null;
+        target.rangeRegion = null;
         target.uncertaintyMeters = 80;
         target.confidence = 0.08;
       }
@@ -361,11 +376,12 @@ class NetworkSensor extends Sensor {
       target.kind = String(raw.kind || raw.source || 'network');
       target.detail = String(raw.detail || raw.source || '');
       target.lastSeen = Number(raw.timestamp) || Date.now();
-      const lat = Number(raw.latitude);
-      const lon = Number(raw.longitude);
-      target.position = Number.isFinite(lat) && Number.isFinite(lon) ? { latitude: lat, longitude: lon } : null;
+      target.lastReceivedAt = Date.now();
+      target.sampleAgeMs = Number(raw.ageMs) || 0;
+      target.position = null;
+      target.presenceKnown = Boolean(raw.persistent);
       target.uncertaintyMeters = 80;
-      target.confidence = target.position ? 0.08 : 0;
+      target.confidence = 0;
     });
     [...this.targets.keys()].forEach(id => {
       if (!seen.has(id)) this.targets.delete(id);

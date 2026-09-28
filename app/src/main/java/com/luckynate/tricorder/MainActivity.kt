@@ -57,11 +57,17 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     private val locationHistory = ArrayDeque<Location>()
     private val headingHistory = ArrayDeque<HeadingSample>()
     private var wifiReceiverRegistered = false
+    private var lastWifiScanAttemptMs = 0L
+    private var lastSentLocationNanos = 0L
+    private var lastBluetoothPayload: String? = null
+    private var lastNetworkPayload: String? = null
+    private val availabilityStates = HashMap<String, String>()
     private var lastUpdateCheckAt = 0L
 
     companion object {
         private const val SENSOR_PERMISSION_REQUEST = 1001
         private const val SENSOR_FRAME_INTERVAL_MS = 33L
+        private const val WIFI_SCAN_INTERVAL_MS = 30_000L
         private const val MAX_LOCATION_HISTORY = 128
         private const val MAX_HEADING_HISTORY = 256
         private const val UPDATE_CHECK_THROTTLE_MS = 30_000L
@@ -71,9 +77,7 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
 
     private val wifiScanReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == WifiManager.SCAN_RESULTS_AVAILABLE_ACTION &&
-                intent.getBooleanExtra(WifiManager.EXTRA_RESULTS_UPDATED, false)
-            ) {
+            if (intent?.action == WifiManager.SCAN_RESULTS_AVAILABLE_ACTION) {
                 sendWifiResults()
             }
         }
@@ -84,10 +88,14 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
             sampleLocationFrame()
             updateMotionHeadingFallback()
             requestWifiScan()
-            sendWifiResults()
             sendBluetoothResults()
             sendNearbyNetworkResults()
-            latestLocation?.let(::sendLocation)
+            latestLocation?.let { location ->
+                if (location.elapsedRealtimeNanos > lastSentLocationNanos) {
+                    lastSentLocationNanos = location.elapsedRealtimeNanos
+                    sendLocation(location)
+                }
+            }
             sendHeading()
             handler.postDelayed(this, SENSOR_FRAME_INTERVAL_MS)
         }
@@ -124,7 +132,16 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         locationManager = getSystemService(LOCATION_SERVICE) as LocationManager
         wifiManager = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
-        bluetoothScanner = BluetoothScanner(applicationContext)
+        bluetoothScanner = BluetoothScanner(applicationContext) {
+            val now = SystemClock.elapsedRealtimeNanos()
+            val location = latestLocation?.takeIf { abs(now - it.elapsedRealtimeNanos) <= 10_000_000_000L }
+            val heading = headingHistory.peekLast()?.takeIf { abs(now - it.timestampNanos) <= 2_000_000_000L }
+            BluetoothScanner.ObserverPose(
+                location?.latitude, location?.longitude, location?.accuracy,
+                heading?.heading, heading?.accuracy ?: headingAccuracy, heading?.source ?: "none",
+                now
+            )
+        }
         nearbyNetworkScanner = NearbyNetworkScanner(applicationContext)
         appUpdater = AppUpdater(this, ::sendStatus)
         requestSensorPermissions()
@@ -165,11 +182,8 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == SENSOR_PERMISSION_REQUEST) {
-            if (hasLocationPermission()) {
-                startSensors()
-            } else {
-                sendStatus("Location permission denied")
-            }
+            startSensors()
+            if (!hasLocationPermission()) sendStatus("Location unavailable; showing unresolved detections")
         }
     }
 
@@ -198,7 +212,10 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     }
 
     private fun startLocationUpdates() {
-        if (!hasLocationPermission()) return
+        if (!hasLocationPermission()) {
+            sendSensorAvailability("location", "permission unavailable")
+            return
+        }
 
         sendStatus("Finding location")
 
@@ -330,8 +347,10 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     }
 
     private fun startWifiScanning() {
-        if (!hasWifiPermission() || !hasLocationPermission()) return
-
+        if (!hasWifiPermission() || !hasLocationPermission()) {
+            sendSensorAvailability("wifi", "permission unavailable")
+            return
+        }
         if (!wifiReceiverRegistered) {
             val filter = IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -342,10 +361,16 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
             }
             wifiReceiverRegistered = true
         }
+        if (!wifiManager.isWifiEnabled) sendSensorAvailability("wifi", "Wi-Fi off")
+        sendWifiResults()
+        requestWifiScan()
     }
 
     private fun startBluetoothScanning() {
-        if (!hasBluetoothPermission()) return
+        if (!hasBluetoothPermission()) {
+            sendSensorAvailability("bluetooth", "permission unavailable")
+            return
+        }
         bluetoothScanner.start()
     }
 
@@ -360,10 +385,20 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
 
     private fun requestWifiScan() {
         if (!hasWifiPermission() || !hasLocationPermission()) return
+        if (!wifiManager.isWifiEnabled) {
+            sendSensorAvailability("wifi", "Wi-Fi off")
+            return
+        }
+        if (availabilityStates["wifi"] == "Wi-Fi off") sendSensorAvailability("wifi", "")
+        val now = SystemClock.elapsedRealtime()
+        if (lastWifiScanAttemptMs != 0L && now - lastWifiScanAttemptMs < WIFI_SCAN_INTERVAL_MS) return
+        lastWifiScanAttemptMs = now
         try {
             @Suppress("DEPRECATION")
-            wifiManager.startScan()
+            if (!wifiManager.startScan()) sendSensorAvailability("wifi", "scan delayed; cached results")
+            else sendSensorAvailability("wifi", "")
         } catch (_: SecurityException) {
+            sendSensorAvailability("wifi", "permission unavailable")
         }
     }
 
@@ -374,7 +409,7 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
             val observations = JSONArray()
             wifiManager.scanResults.forEach { result ->
                 val sampleTimeNanos = result.timestamp * 1000L
-                val location = nearestLocation(sampleTimeNanos) ?: return@forEach
+                val location = nearestLocation(sampleTimeNanos)
                 val heading = nearestHeading(sampleTimeNanos)
 
                 observations.put(JSONObject().apply {
@@ -383,10 +418,13 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
                     put("rssi", result.level)
                     put("frequency", result.frequency)
                     put("timestamp", result.timestamp / 1000L)
-                    put("latitude", location.latitude)
-                    put("longitude", location.longitude)
-                    put("accuracy", location.accuracy)
-                    heading?.let {
+                    put("ageMs", ((SystemClock.elapsedRealtimeNanos() - sampleTimeNanos) / 1_000_000L).coerceAtLeast(0L))
+                    location?.takeIf { abs(it.elapsedRealtimeNanos - sampleTimeNanos) <= 10_000_000_000L }?.let {
+                        put("latitude", it.latitude)
+                        put("longitude", it.longitude)
+                        put("accuracy", it.accuracy)
+                    }
+                    heading?.takeIf { abs(it.timestampNanos - sampleTimeNanos) <= 2_000_000_000L }?.let {
                         put("heading", it.heading)
                         put("headingSource", it.source)
                         put("headingAccuracy", it.accuracy)
@@ -397,25 +435,26 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
             val script = "window.Tricorder && window.Tricorder.onWifiScan($observations);"
             runOnUiThread { webView.evaluateJavascript(script, null) }
         } catch (_: SecurityException) {
-            sendStatus("Wi-Fi scan permission unavailable")
+            sendSensorAvailability("wifi", "permission unavailable")
         }
     }
 
     private fun sendBluetoothResults() {
         if (!hasBluetoothPermission()) return
-        val observations = bluetoothScanner.frame(
-            latestLocation,
-            latestHeadingDegrees,
-            headingAccuracy,
-            headingSource
-        )
-        val script = "window.Tricorder && window.Tricorder.onBluetoothScan && window.Tricorder.onBluetoothScan($observations);"
+        val observations = bluetoothScanner.frame()
+        val payload = observations.toString()
+        if (payload == lastBluetoothPayload) return
+        lastBluetoothPayload = payload
+        val script = "window.Tricorder && window.Tricorder.onBluetoothScan && window.Tricorder.onBluetoothScan($payload);"
         runOnUiThread { webView.evaluateJavascript(script, null) }
     }
 
     private fun sendNearbyNetworkResults() {
-        val observations = nearbyNetworkScanner.frame(latestLocation)
-        val script = "window.Tricorder && window.Tricorder.onNearbyNetworkScan && window.Tricorder.onNearbyNetworkScan($observations);"
+        val observations = nearbyNetworkScanner.frame()
+        val payload = observations.toString()
+        if (payload == lastNetworkPayload) return
+        lastNetworkPayload = payload
+        val script = "window.Tricorder && window.Tricorder.onNearbyNetworkScan && window.Tricorder.onNearbyNetworkScan($payload);"
         runOnUiThread { webView.evaluateJavascript(script, null) }
     }
 
@@ -444,25 +483,20 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         smoothedHeadingDegrees = smoothed
 
         val source = headingSource.replace("\\", "\\\\").replace("'", "\\'")
-        val mapRotation = -smoothed
-        val script = """
-            (function(){
-              const mapEl=document.getElementById('map');
-              if(mapEl){
-                mapEl.style.transformOrigin='50% 50%';
-                mapEl.style.transform='rotate(${mapRotation}deg) scale(1.42)';
-              }
-              if(window.Tricorder && window.Tricorder.onHeading){
-                window.Tricorder.onHeading($smoothed,$headingAccuracy,'$source');
-              }
-            })();
-        """.trimIndent()
+        val script = "window.Tricorder && window.Tricorder.onHeading($smoothed,$headingAccuracy,'$source');"
         runOnUiThread { webView.evaluateJavascript(script, null) }
     }
 
     private fun sendStatus(message: String) {
         val escaped = message.replace("\\", "\\\\").replace("'", "\\'")
         val script = "window.Tricorder && window.Tricorder.onStatus('$escaped');"
+        runOnUiThread { webView.evaluateJavascript(script, null) }
+    }
+
+    private fun sendSensorAvailability(id: String, state: String) {
+        if (availabilityStates[id] == state) return
+        availabilityStates[id] = state
+        val script = "window.Tricorder && window.Tricorder.onSensorAvailability && window.Tricorder.onSensorAvailability(${JSONObject.quote(id)},${JSONObject.quote(state)});"
         runOnUiThread { webView.evaluateJavascript(script, null) }
     }
 

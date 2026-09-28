@@ -21,14 +21,14 @@ Current inputs:
 
 Automotive Bluetooth devices are filtered from the Bluetooth target layer.
 
-Current planned discovery sources include Wi-Fi Direct, Cast/media routes, mDNS, SSDP/UPnP, supported ranging APIs such as Wi-Fi RTT/UWB, camera/AR data, and any other useful local observations Android exposes.
+Current discovery also includes Wi-Fi Direct peers, media routes, mDNS services, and SSDP/UPnP advertisements. These are network discoveries, not measured geographic positions. Supported ranging APIs such as Wi-Fi RTT/UWB and camera/AR data remain future work.
 
 ## Radar
 
-The default 2D view is a local Leaflet/OpenStreetMap radar centered on the phone.
+The default 2D view is a custom OpenStreetMap tile radar centered on the phone.
 
-- Range options: **10 m, 50 m, 100 m, 500 m, 1 km radius**.
-- Default range: **10 m radius**.
+- Range options: **20 m, 50 m, 100 m, 500 m, 1 km radius**.
+- Default range: **20 m radius**.
 - The phone remains the observer/map center, not a detected target.
 - The map rotates under the phone using current heading so forward stays up.
 - Sensor layers can be toggled independently from the generated sensor-control key.
@@ -41,9 +41,9 @@ The default 2D view is a local Leaflet/OpenStreetMap radar centered on the phone
 
 Wi-Fi and Bluetooth observations are stored per target and combined over time.
 
-RSSI is treated as approximate range evidence. Movement provides geometric separation between observations. Rotation-vector heading can contribute weak directional evidence when signal strength changes during a sweep. The result is rendered as an uncertainty cloud rather than pretending the scanner knows an exact coordinate.
+RSSI is treated as approximate range evidence. Movement provides geometric separation between new observations. Rotation-vector heading can contribute weak directional evidence when signal strength changes during a sweep. A single range observation is shown as a broad annular region; multiple observations produce a best candidate with an uncertainty cloud. The confidence score is heuristic, not a calibrated probability of an exact position.
 
-A target with no usable range measurement can still be shown as a broad low-confidence unresolved region. This is currently used for bonded Bluetooth devices that Android exposes without a live RSSI measurement.
+A target with no usable range measurement remains in the device list as geographically unresolved. This is currently used for bonded Bluetooth devices that Android exposes without a live RSSI measurement.
 
 ## Bluetooth discovery
 
@@ -53,7 +53,7 @@ The Bluetooth layer currently merges three Android-visible sources into the same
 - classic Bluetooth devices found during discovery;
 - bonded/paired devices.
 
-BLE and classic detections with RSSI are treated as nearby observations and can participate in ranging/localization. Bonded devices without current RSSI are retained as unresolved low-confidence targets until stronger evidence is available.
+BLE and classic detections with RSSI are treated as nearby observations and can participate in ranging/localization. Bonded devices without current RSSI are retained as unresolved targets in the list until stronger evidence is available.
 
 Classic discovery is kept active while the scanner is running and restarted when Android reports that a discovery cycle has finished. BLE uses low-latency scanning. The scanner frame consumes the latest available observations rather than imposing a slower application polling interval.
 
@@ -89,4 +89,4 @@ Versioning uses the Actions run number:
 - `versionName = 0.1.<GITHUB_RUN_NUMBER>`
 - rolling APK: `Tricorder-latest.apk`
 
-Main builds use the persistent release signing key configured in GitHub Actions. The app no longer downloads or installs APKs itself. It checks the GitHub `latest` release metadata and reports when a newer version is available. That check runs again when the app resumes, with a short throttle to avoid repeatedly hitting GitHub.
+Main builds use the persistent release signing key configured in GitHub Actions. The app checks the GitHub `latest` release metadata when it resumes. When a newer versioned APK is available, it downloads it through Android DownloadManager and opens the system installer. The user completes installation through Android. Checks have a short throttle to avoid repeatedly hitting GitHub.

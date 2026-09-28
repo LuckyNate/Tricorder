@@ -26,6 +26,9 @@ class Target {
     this.detail = '';
     this.kind = '';
     this.lastSeen = 0;
+    this.lastReceivedAt = 0;
+    this.sampleAgeMs = 0;
+    this.knowledgeOnly = false;
   }
 
   addObservation(observation) {
@@ -80,6 +83,8 @@ class RadarView {
     this.rangeRing = null;
     this.centerDot = null;
     this.resizeObserver = null;
+    this.tiles = new Map();
+    this.viewVersion = 0;
     this.initMap();
   }
 
@@ -133,7 +138,9 @@ class RadarView {
 
   setLocation(latitude, longitude, accuracy) {
     if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
+    if (this.location && this.location.latitude === latitude && this.location.longitude === longitude && this.location.accuracy === accuracy) return;
     this.location = { latitude, longitude, accuracy: Number(accuracy) || 25 };
+    this.viewVersion += 1;
     this.renderMap();
   }
 
@@ -145,6 +152,7 @@ class RadarView {
 
   setRange(meters) {
     this.rangeMeters = Number(meters) || 20;
+    this.viewVersion += 1;
     this.renderMap();
   }
 
@@ -154,7 +162,8 @@ class RadarView {
     const height = this.mapEl.clientHeight || 320;
 
     if (!this.location) {
-      this.tileLayer.replaceChildren();
+      this.tiles.forEach(tile => tile.remove());
+      this.tiles.clear();
       this.rangeRing.style.width = '45%';
       this.rangeRing.style.height = '45%';
       this.rangeRing.style.left = '27.5%';
@@ -171,22 +180,33 @@ class RadarView {
     const endY = Math.floor((centerY + height / 2) / this.tileSize) + 1;
     const tileCount = Math.pow(2, this.zoom);
 
-    const fragment = document.createDocumentFragment();
+    const visibleTiles = new Set();
     for (let y = startY; y <= endY; y += 1) {
       if (y < 0 || y >= tileCount) continue;
       for (let x = startX; x <= endX; x += 1) {
         const wrappedX = ((x % tileCount) + tileCount) % tileCount;
-        const img = document.createElement('img');
-        img.className = 'map-tile';
-        img.alt = '';
-        img.draggable = false;
-        img.src = `https://tile.openstreetmap.org/${this.zoom}/${wrappedX}/${y}.png`;
+        const key = `${this.zoom}/${x}/${y}`;
+        visibleTiles.add(key);
+        let img = this.tiles.get(key);
+        if (!img) {
+          img = document.createElement('img');
+          img.className = 'map-tile';
+          img.alt = '';
+          img.draggable = false;
+          img.src = `https://tile.openstreetmap.org/${this.zoom}/${wrappedX}/${y}.png`;
+          this.tiles.set(key, img);
+          this.tileLayer.appendChild(img);
+        }
         img.style.left = `${x * this.tileSize - centerX + width / 2}px`;
         img.style.top = `${y * this.tileSize - centerY + height / 2}px`;
-        fragment.appendChild(img);
       }
     }
-    this.tileLayer.replaceChildren(fragment);
+    this.tiles.forEach((img, key) => {
+      if (!visibleTiles.has(key)) {
+        img.remove();
+        this.tiles.delete(key);
+      }
+    });
 
     const pixels = Math.max(8, this.rangeMeters / this.metersPerPixel());
     this.rangeRing.style.width = `${pixels * 2}px`;
@@ -224,6 +244,10 @@ class RadarView {
         cloud.style.left = `${point.x - radiusPx}px`;
         cloud.style.top = `${point.y - radiusPx}px`;
         cloud.style.opacity = String(Math.max(0.16, Math.min(0.82, 0.2 + target.confidence * 0.62)));
+        if (target.rangeRegion) {
+          const inner = Math.max(0, Math.min(95, target.rangeRegion.innerMeters / target.rangeRegion.outerMeters * 100));
+          cloud.style.background = `radial-gradient(circle, transparent ${inner}%, color-mix(in srgb, var(--sensor-color) 25%, transparent) ${Math.min(100, inner + 2)}%)`;
+        }
         this.targetLayer.appendChild(cloud);
 
         if (target.confidence >= 0.62) {
@@ -258,6 +282,9 @@ class ScannerEngine {
     this.radar = radar;
     this.sensors = new Map();
     this.lastFrame = 0;
+    this.lastListRender = 0;
+    this.lastViewVersion = -1;
+    this.needsRender = true;
     this.controlsEl = document.getElementById('sensorControls');
     this.listsEl = document.getElementById('deviceLists');
     this.statusEl = document.getElementById('status');
@@ -277,8 +304,15 @@ class ScannerEngine {
   frame(now) {
     if (now - this.lastFrame >= 1000 / 30) {
       this.sensors.forEach(sensor => sensor.frame(now));
-      this.radar.render(this);
-      this.renderLists();
+      if (this.needsRender || this.lastViewVersion !== this.radar.viewVersion) {
+        this.radar.render(this);
+        this.lastViewVersion = this.radar.viewVersion;
+        this.needsRender = false;
+      }
+      if (now - this.lastListRender >= 1000) {
+        this.renderLists();
+        this.lastListRender = now;
+      }
       this.lastFrame = now;
     }
     requestAnimationFrame(this.frame);
@@ -335,7 +369,12 @@ class ScannerEngine {
           name.textContent = target.name || target.id;
           const meta = document.createElement('span');
           meta.className = 'device-meta';
-          meta.textContent = `${target.kind || sensor.id} · ±${meters}m · ${confidence}%${target.detail ? ` · ${target.detail}` : ''}`;
+          const age = target.lastReceivedAt ? Math.max(0, Math.round((Date.now() - target.lastReceivedAt + (target.sampleAgeMs || 0)) / 1000)) : null;
+          const freshness = target.knowledgeOnly ? 'paired; not heard'
+            : sensor.id === 'network' ? (target.presenceKnown ? 'available route' : age === null ? 'age unknown' : `discovered ${age}s ago`)
+            : age === null ? 'age unknown' : age < 5 ? 'heard now' : `last heard ${age}s ago`;
+          const region = target.position ? `range spread ≈${meters}m · score ${confidence}/100` : 'location unresolved';
+          meta.textContent = `${target.kind || sensor.id} · ${freshness} · ${region}${target.detail ? ` · ${target.detail}` : ''}`;
           row.append(name, meta);
           row.addEventListener('click', () => {
             if (!this.radar.ping(target)) this.setStatus(`${sensor.label}: location unresolved`);

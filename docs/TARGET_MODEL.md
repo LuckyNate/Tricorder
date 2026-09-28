@@ -41,7 +41,7 @@ Possible presentations include:
 
 - unresolved broad region when existence is known but range is not;
 - annulus when one or more RSSI observations provide approximate radial range but insufficient geometry;
-- probability field when movement and/or heading evidence supplies useful geometry;
+- candidate-field calculation when movement and/or heading evidence supplies useful geometry (the current UI displays a best candidate and circular spread, not the full field);
 - high-confidence point marker only when the solved distribution is concentrated enough.
 
 The visual statement is always "the target is believed to be somewhere in this region," not "the phone is the target location."
@@ -56,7 +56,7 @@ The visual statement is always "the target is believed to be somewhere in this r
 
 ## Freshness
 
-Recent observations contribute more strongly than stale observations.
+Recent observations contribute more strongly than stale observations. The UI distinguishes recent and cached radio sightings from paired-only knowledge using the original sample age.
 
 A source may retain a target briefly after its last active observation if that is useful to the sensor model. The current Bluetooth native layer retains active BLE/classic observations for 30 seconds. Bonded Bluetooth devices are a different class of evidence: Android knows the relationship exists even when no current RSSI measurement is available, so they remain visible as unresolved low-confidence targets until stronger evidence appears.
 
@@ -66,7 +66,7 @@ Wi-Fi targets are keyed by BSSID.
 
 Observation history includes RSSI, frequency, true scan timestamp, observer position/accuracy and matched heading metadata. Cached Android scan results are deduplicated by their original timestamps rather than treated as new measurements.
 
-Without sufficient geometry the target renders as a radial uncertainty cloud. Movement between observations and orientation sweeps can tighten the distribution.
+Without sufficient geometry the target renders as a broad annular uncertainty region. Movement between new observations and orientation sweeps can tighten the distribution; repeated cached scans do not add evidence.
 
 ## Bluetooth targets
 
@@ -78,7 +78,11 @@ Bluetooth targets are keyed by Bluetooth address and currently merge:
 
 BLE/classic observations that include RSSI can be ranged approximately and accumulated over movement/rotation just like other radio observations.
 
-Bonded observations may have no live RSSI. Those are deliberately kept as broad, very-low-confidence unresolved targets around the current observer region. A later BLE or classic observation of the same address upgrades the same target with actual nearby/range evidence instead of creating a duplicate target.
+Bonded observations may have no live RSSI. Those remain in the list as geographically unresolved targets. A later BLE or classic observation of the same address upgrades the target with actual nearby/range evidence instead of creating a duplicate target.
+
+## Network discoveries
+
+mDNS, SSDP, Wi-Fi Direct and media routes are listed as discovered services/devices without a geographic position. Their presence on a network is not evidence that they occupy the observer's coordinates or even the same room.
 
 Automotive Bluetooth targets are filtered before target creation.
 

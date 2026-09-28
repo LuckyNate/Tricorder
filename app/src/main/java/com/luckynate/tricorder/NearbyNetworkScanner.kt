@@ -4,7 +4,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.location.Location
 import android.media.MediaRouter
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
@@ -80,8 +79,7 @@ class NearbyNetworkScanner(private val context: Context) {
         multicastLock = null
     }
 
-    fun frame(location: Location?): JSONArray {
-        refreshMediaRoutes()
+    fun frame(): JSONArray {
         discoverP2pPeers()
         sendSsdpSearch()
 
@@ -102,12 +100,9 @@ class NearbyNetworkScanner(private val context: Context) {
                 put("source", observation.source)
                 put("kind", observation.kind)
                 put("detail", observation.detail)
+                put("persistent", observation.persistent)
                 put("timestamp", observation.timestampNanos / 1_000_000L)
-                location?.let {
-                    put("latitude", it.latitude)
-                    put("longitude", it.longitude)
-                    put("accuracy", it.accuracy)
-                }
+                put("ageMs", ((now - observation.timestampNanos) / 1_000_000_000L).coerceAtLeast(0L) * 1000L)
             })
         }
         return output
@@ -350,14 +345,18 @@ class NearbyNetworkScanner(private val context: Context) {
         val router = mediaRouter ?: return
         try {
             val defaultRoute = router.defaultRoute
+            val currentIds = HashSet<String>()
             for (i in 0 until router.routeCount) {
                 val route = router.getRouteAt(i)
                 if (route == defaultRoute) continue
                 val name = route.getName(context)?.toString() ?: "Media route"
                 val description = route.description?.toString().orEmpty()
                 val hasVideo = (route.supportedTypes and MediaRouter.ROUTE_TYPE_LIVE_VIDEO) != 0
+                val id = "media:${name.lowercase()}:${route.supportedTypes}"
+                currentIds.add(id)
+                if (observations[id]?.detail == description) continue
                 record(
-                    id = "media:${name.lowercase()}:${route.supportedTypes}",
+                    id = id,
                     name = name,
                     source = "media-route",
                     kind = if (hasVideo) "cast" else "media",
@@ -365,6 +364,7 @@ class NearbyNetworkScanner(private val context: Context) {
                     persistent = true
                 )
             }
+            observations.keys.filter { it.startsWith("media:") && it !in currentIds }.forEach { observations.remove(it) }
         } catch (_: Exception) {
         }
     }

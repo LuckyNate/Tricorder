@@ -20,19 +20,19 @@ The native layer owns hardware/API acquisition and permission handling, includin
 - Bluetooth Low Energy scanning;
 - classic Bluetooth discovery;
 - bonded Bluetooth enumeration;
-- future Wi-Fi Direct, media-route/Cast, mDNS, SSDP/UPnP and other local discovery APIs;
+- Wi-Fi Direct, media-route/Cast, mDNS and SSDP/UPnP discovery;
 - future Wi-Fi RTT/UWB where supported;
 - future camera/AR support;
 - additional Android sensor inputs.
 
-The native scanner loop runs on a 33 ms cadence. Each sense is queried or its latest hardware state is consumed every frame. Android/hardware may update more slowly than 30 Hz; Tricorder still presents the newest available observation every frame rather than imposing an additional slow polling cadence.
+The native presentation loop runs on a 33 ms cadence. It consumes the latest hardware state; Wi-Fi scan attempts are scheduled separately, and Android/hardware may deliver new measurements more slowly than 30 Hz. Unchanged Bluetooth and network snapshots are not re-sent to the WebView.
 
 ### WebView responsibilities
 
 The local HTML/CSS/JavaScript layer owns:
 
 - application UI;
-- Leaflet/OpenStreetMap radar presentation;
+- custom OpenStreetMap tile radar presentation;
 - generated sensor layer controls;
 - persistent target registries;
 - uncertainty-cloud rendering;
@@ -44,15 +44,15 @@ The local HTML/CSS/JavaScript layer owns:
 
 The phone is the observer and radar center, not a target location.
 
-- Range options are 10 m, 50 m, 100 m, 500 m and 1 km radius.
-- Default range is 10 m.
+- Range options are 20 m, 50 m, 100 m, 500 m and 1 km radius.
+- Default range is 20 m.
 - Phone heading rotates the map beneath the observer so forward remains up.
 - World targets remain fixed in world coordinates as the view rotates.
 - Target position is represented as a distribution/uncertainty region until evidence supports a tighter estimate.
 
 ## Sensor registry
 
-Web sensors derive from `ScannerSensor` and register into one runtime sensor registry.
+Active Web sensors derive from `Sensor` and register into one runtime sensor registry.
 
 A sensor owns its display identity, color, enabled state and frame behavior. The control pane is generated from that registry.
 
@@ -60,6 +60,7 @@ Current registered sensor layers:
 
 - Wi-Fi source — green (`#39D353`);
 - Bluetooth device — Bluetooth blue (`#0082FC`).
+- network/Cast discovery — amber (`#FFD166`).
 
 ## Observation flow
 
@@ -68,7 +69,7 @@ Current registered sensor layers:
 3. The receiving sensor ingests the observation into a persistent target keyed by stable identity.
 4. New evidence updates the target's observation history.
 5. The target solver computes the current uncertainty region/confidence.
-6. Only dirty targets are redrawn.
+6. Changed sensor snapshots redraw target layers; existing map tiles are reused across position updates.
 7. Layers are ordered by confidence.
 
 The UI is therefore a live projection of target state, not a collection of disconnected detections.
@@ -79,9 +80,9 @@ Each Wi-Fi access point is keyed by BSSID.
 
 Observations include BSSID, SSID, RSSI, frequency, hardware timestamp, phone latitude/longitude/accuracy and matched heading metadata.
 
-The native scanner requests a Wi-Fi scan every scanner frame and also reads the current `WifiManager.scanResults` every frame. Cached results keep their real hardware timestamps; the WebView deduplicates observations rather than pretending cached scans are new samples.
+The native scanner attempts a Wi-Fi scan no more often than every 30 seconds and reads results at startup and when Android reports a scan. Cached results keep their real hardware timestamps; the WebView deduplicates observations rather than pretending cached scans are new samples. Sample age is displayed separately from the UI frame rate.
 
-RSSI becomes approximate radial range evidence. With insufficient geometry, the target is an annulus: the router is somewhere in that cloud, not at the phone. With movement and/or sufficient orientation sweep, candidate world positions are scored from the observation history and rendered as probability mass regions.
+RSSI becomes approximate radial range evidence. With insufficient geometry, the target is a broad annulus: the router is somewhere in that cloud, not at the phone. With movement and/or sufficient orientation sweep, candidate world positions are scored from the observation history; the current UI renders the best candidate with a circular uncertainty spread, not the full candidate distribution.
 
 Rotation evidence uses only true orientation heading, not GPS motion bearing, because it is being used as a weak antenna-direction clue rather than merely map facing.
 
@@ -99,7 +100,11 @@ Targets are keyed by Bluetooth address. BLE/classic observations with RSSI parti
 
 Automotive Bluetooth devices are filtered before they enter the target stream using the Bluetooth car-audio device class and known automotive-name hints.
 
-The WebView treats each native Bluetooth frame as the current set of visible/known Bluetooth targets. Non-bonded observations age out natively after 30 seconds; targets absent from the current native snapshot are removed from the Bluetooth layer.
+The WebView treats each changed native Bluetooth snapshot as the current set of visible/known Bluetooth targets. Active observations age out natively after 30 seconds; bonded-only targets remain geographically unresolved. A radio callback captures the current observer pose where available.
+
+## Network discovery
+
+Wi-Fi Direct peers, media routes, mDNS services and SSDP advertisements feed a separate network layer. They are listed without an invented world position. Network discovery does not itself establish that a service is in the room.
 
 ## Heading
 
@@ -111,7 +116,7 @@ Wi-Fi/Bluetooth observation records can carry matched heading metadata so a phys
 
 ## Updates
 
-The app checks the GitHub `latest` release metadata for a higher `versionCode`. The app does not download or install APKs itself.
+The app checks the GitHub `latest` release metadata for a higher `versionCode`, downloads the versioned APK through DownloadManager, and opens Android's system installer.
 
 Update checks occur when the app resumes, with a short throttle to avoid redundant requests.
 
