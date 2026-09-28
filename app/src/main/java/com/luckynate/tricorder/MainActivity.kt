@@ -52,6 +52,8 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     private val handler = Handler(Looper.getMainLooper())
 
     private var latestLocation: Location? = null
+    private var latestGpsLocation: Location? = null
+    private var latestNetworkLocation: Location? = null
     private var latestHeadingDegrees: Float? = null
     private var smoothedHeadingDegrees: Float? = null
     private var headingAccuracy = SensorManager.SENSOR_STATUS_UNRELIABLE
@@ -60,7 +62,6 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     private val headingHistory = ArrayDeque<HeadingSample>()
     private var wifiReceiverRegistered = false
     private var lastWifiScanAttemptMs = 0L
-    private var lastSentLocationNanos = 0L
     private var lastBluetoothPayload: String? = null
     private var lastNetworkPayload: String? = null
     private var lastRadioPayload: String? = null
@@ -73,6 +74,7 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         private const val SENSOR_FRAME_INTERVAL_MS = 33L
         private const val WIFI_SCAN_INTERVAL_MS = 30_000L
         private const val RADIO_FRAME_INTERVAL_MS = 1_000L
+        private const val GPS_FRESH_NANOS = 30_000_000_000L
         private const val MAX_LOCATION_HISTORY = 128
         private const val MAX_HEADING_HISTORY = 256
         private const val UPDATE_CHECK_THROTTLE_MS = 30_000L
@@ -90,18 +92,13 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
 
     private val sensorFrameLoop = object : Runnable {
         override fun run() {
-            sampleLocationFrame()
+            updateBestLocation()
             updateMotionHeadingFallback()
             requestWifiScan()
             sendBluetoothResults()
             sendNearbyNetworkResults()
             sendRadioResults()
-            latestLocation?.let { location ->
-                if (location.elapsedRealtimeNanos > lastSentLocationNanos) {
-                    lastSentLocationNanos = location.elapsedRealtimeNanos
-                    sendLocation(location)
-                }
-            }
+            latestLocation?.let(::sendLocation)
             sendHeading()
             handler.postDelayed(this, SENSOR_FRAME_INTERVAL_MS)
         }
@@ -236,6 +233,7 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
             } catch (_: Exception) {
             }
         }
+        updateBestLocation()
     }
 
     private fun startHeadingUpdates() {
@@ -290,21 +288,20 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         while (headingHistory.size > MAX_HEADING_HISTORY) headingHistory.removeFirst()
     }
 
-    private fun sampleLocationFrame() {
-        if (!hasLocationPermission()) return
+    private fun updateBestLocation() {
+        val now = SystemClock.elapsedRealtimeNanos()
+        val gps = latestGpsLocation
+        val network = latestNetworkLocation
+        val best = when {
+            gps != null && now - gps.elapsedRealtimeNanos <= GPS_FRESH_NANOS -> gps
+            network != null -> network
+            else -> gps
+        } ?: return
 
-        listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER).forEach { provider ->
-            try {
-                if (locationManager.isProviderEnabled(provider)) {
-                    locationManager.getLastKnownLocation(provider)?.let { location ->
-                        val current = latestLocation
-                        if (current == null || location.elapsedRealtimeNanos >= current.elapsedRealtimeNanos) {
-                            handleLocation(location)
-                        }
-                    }
-                }
-            } catch (_: Exception) {
-            }
+        val current = latestLocation
+        if (current == null || best.provider != current.provider || best.elapsedRealtimeNanos != current.elapsedRealtimeNanos) {
+            latestLocation = Location(best)
+            recordLocationHistory(latestLocation!!)
         }
     }
 
@@ -326,9 +323,27 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
 
     private fun handleLocation(location: Location) {
         val copy = Location(location)
-        latestLocation = copy
-        if (locationHistory.isEmpty() || copy.elapsedRealtimeNanos > locationHistory.peekLast().elapsedRealtimeNanos) {
-            locationHistory.addLast(copy)
+        when (copy.provider) {
+            LocationManager.GPS_PROVIDER -> {
+                val currentGps = latestGpsLocation
+                if (currentGps == null || copy.elapsedRealtimeNanos >= currentGps.elapsedRealtimeNanos) {
+                    latestGpsLocation = copy
+                }
+            }
+            LocationManager.NETWORK_PROVIDER -> {
+                val currentNetwork = latestNetworkLocation
+                if (currentNetwork == null || copy.elapsedRealtimeNanos >= currentNetwork.elapsedRealtimeNanos) {
+                    latestNetworkLocation = copy
+                }
+            }
+            else -> return
+        }
+        updateBestLocation()
+    }
+
+    private fun recordLocationHistory(location: Location) {
+        if (locationHistory.isEmpty() || location.elapsedRealtimeNanos > locationHistory.peekLast().elapsedRealtimeNanos) {
+            locationHistory.addLast(Location(location))
             while (locationHistory.size > MAX_LOCATION_HISTORY) locationHistory.removeFirst()
         }
     }
