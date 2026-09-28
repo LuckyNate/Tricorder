@@ -202,7 +202,7 @@ class RadioScanner(private val context: Context) {
                 row.put("cellId", identity.ci)
             }
             is CellInfoNr -> {
-                val identity = cell.cellIdentity
+                val identity = cell.cellIdentity as? android.telephony.CellIdentityNr ?: return null
                 technology = "NR"
                 id = "nr:${identity.mccString.orEmpty()}:${identity.mncString.orEmpty()}:${identity.tac}:${identity.nci}"
                 dbm = cell.cellSignalStrength.dbm
