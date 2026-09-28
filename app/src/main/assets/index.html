@@ -18,7 +18,7 @@
     <section id="controls">
       <div id="controlTop">
         <a id="updateBanner"
-           href="https://github.com/LuckyNate/Tricorder/releases/download/latest/Tricorder-latest.apk"
+           href="#"
            hidden
            style="box-sizing:border-box;display:none;width:100%;padding:10px 12px;border:1px solid #ffd166;border-radius:8px;background:#3a2c09;color:#fff3c4;font:700 13px/1.25 monospace;letter-spacing:.045em;text-decoration:none;text-align:center;">
           UPDATE AVAILABLE — TAP TO DOWNLOAD
@@ -50,9 +50,11 @@
         const text = String(message || '');
         const match = text.match(/^Update\s+(0\.1\.\d+)\s+available$/i);
         if (match) {
+          const version = match[1];
+          updateBanner.href = `https://github.com/LuckyNate/Tricorder/releases/download/latest/Tricorder-${version}.apk`;
           updateBanner.hidden = false;
           updateBanner.style.display = 'block';
-          updateBanner.textContent = `UPDATE ${match[1]} AVAILABLE — TAP TO DOWNLOAD`;
+          updateBanner.textContent = `UPDATE ${version} AVAILABLE — TAP TO DOWNLOAD`;
           return;
         }
         originalOnStatus(message);
