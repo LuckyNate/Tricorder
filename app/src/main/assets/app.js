@@ -33,7 +33,7 @@
     const threeDView = document.getElementById('threeDView');
 
     let rangeIndex = 0;
-    rangeButton.textContent = `${ranges[rangeIndex]} m radius`;
+    rangeButton.textContent = `Range: ${ranges[rangeIndex]} Meters`;
 
     const radar = new RadarView();
     radar.setRange(ranges[rangeIndex]);
@@ -41,7 +41,7 @@
     rangeButton.addEventListener('click', () => {
       rangeIndex = (rangeIndex + 1) % ranges.length;
       const range = ranges[rangeIndex];
-      rangeButton.textContent = `${range} m radius`;
+      rangeButton.textContent = `Range: ${range} Meters`;
       radar.setRange(range);
     });
 
