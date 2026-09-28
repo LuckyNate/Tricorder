@@ -33,7 +33,10 @@
     const threeDView = document.getElementById('threeDView');
 
     let rangeIndex = 0;
-    rangeButton.textContent = `Range: ${ranges[rangeIndex]} Meters`;
+    function syncRangeButton() {
+      rangeButton.textContent = `Range: ${ranges[rangeIndex]} Meters`;
+    }
+    syncRangeButton();
 
     const radar = new RadarView();
     radar.setRange(ranges[rangeIndex]);
@@ -41,19 +44,23 @@
     rangeButton.addEventListener('click', () => {
       rangeIndex = (rangeIndex + 1) % ranges.length;
       const range = ranges[rangeIndex];
-      rangeButton.textContent = `Range: ${range} Meters`;
+      syncRangeButton();
       radar.setRange(range);
     });
 
     let mode = '2d';
-    modeToggle.addEventListener('click', () => {
-      mode = mode === '2d' ? '3d' : '2d';
+    function applyMode(nextMode) {
+      mode = nextMode === '3d' ? '3d' : '2d';
       const is3d = mode === '3d';
       mapRotator.hidden = is3d;
       threeDView.hidden = !is3d;
       mode2d.classList.toggle('active', !is3d);
       mode3d.classList.toggle('active', is3d);
       modeToggle.setAttribute('aria-pressed', String(is3d));
+    }
+
+    modeToggle.addEventListener('click', () => {
+      applyMode(mode === '2d' ? '3d' : '2d');
     });
 
     const engine = new ScannerEngine(radar);
@@ -101,6 +108,37 @@
     window.Tricorder = {
       engine,
       radar,
+      snapshotState() {
+        return JSON.stringify({
+          schemaVersion: 1,
+          savedAt: Date.now(),
+          engine: engine.exportRecoveryState(),
+          ui: { mode, rangeIndex }
+        });
+      },
+      restoreState(snapshot) {
+        try {
+          const state = typeof snapshot === 'string' ? JSON.parse(snapshot) : snapshot;
+          if (!state || state.schemaVersion !== 1 || !state.engine) return false;
+          if (!engine.importRecoveryState(state.engine)) return false;
+
+          const restoredRange = Number(engine.radar.rangeMeters);
+          const restoredIndex = ranges.indexOf(restoredRange);
+          if (restoredIndex >= 0) rangeIndex = restoredIndex;
+          else if (state.ui && Number.isInteger(Number(state.ui.rangeIndex))) {
+            rangeIndex = Math.max(0, Math.min(ranges.length - 1, Number(state.ui.rangeIndex)));
+            radar.setRange(ranges[rangeIndex]);
+          }
+          syncRangeButton();
+          applyMode(state.ui && state.ui.mode === '3d' ? '3d' : '2d');
+          engine.needsRender = true;
+          showSources();
+          return true;
+        } catch (error) {
+          fault(error.message || error);
+          return false;
+        }
+      },
       onLocation(latitude, longitude, accuracy) {
         try {
           locationSensor.ingest(latitude, longitude, accuracy);
