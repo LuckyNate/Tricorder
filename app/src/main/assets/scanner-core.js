@@ -80,6 +80,7 @@ class RadarView {
     this.mapEl = document.getElementById('map');
     this.rotatorEl = document.getElementById('mapRotator');
     this.targetLayer = null;
+    this.pingLayer = null;
     this.tileLayer = null;
     this.rangeRing = null;
     this.centerDot = null;
@@ -98,12 +99,14 @@ class RadarView {
     this.tileLayer.className = 'tile-layer';
     this.targetLayer = document.createElement('div');
     this.targetLayer.className = 'target-layer';
+    this.pingLayer = document.createElement('div');
+    this.pingLayer.className = 'ping-layer';
     this.rangeRing = document.createElement('div');
     this.rangeRing.className = 'range-ring';
     this.centerDot = document.createElement('div');
     this.centerDot.className = 'map-center-dot';
 
-    this.mapEl.append(this.tileLayer, this.targetLayer, this.rangeRing, this.centerDot);
+    this.mapEl.append(this.tileLayer, this.targetLayer, this.pingLayer, this.rangeRing, this.centerDot);
 
     if ('ResizeObserver' in window) {
       this.resizeObserver = new ResizeObserver(() => this.renderMap());
@@ -272,16 +275,25 @@ class RadarView {
   }
 
   ping(target) {
-    if (!target || !target.position || !this.targetLayer) return false;
+    if (!target || !target.position || !this.pingLayer) return false;
     const point = this.project(target.position);
     if (!point) return false;
-    const ping = document.createElement('div');
-    ping.className = 'target-ping';
-    ping.style.setProperty('--sensor-color', target.sensor.color);
-    ping.style.left = `${point.x}px`;
-    ping.style.top = `${point.y}px`;
-    this.targetLayer.appendChild(ping);
-    ping.addEventListener('animationend', () => ping.remove(), { once: true });
+
+    const ripple = document.createElement('div');
+    ripple.className = 'target-ripple';
+    ripple.style.setProperty('--sensor-color', target.sensor.color);
+    ripple.style.left = `${point.x}px`;
+    ripple.style.top = `${point.y}px`;
+
+    for (let index = 0; index < 3; index += 1) {
+      const ring = document.createElement('span');
+      ring.className = 'target-ripple-ring';
+      ring.style.animationDelay = `${index * 300}ms`;
+      ripple.appendChild(ring);
+    }
+
+    this.pingLayer.appendChild(ripple);
+    window.setTimeout(() => ripple.remove(), 3000);
     return true;
   }
 }
