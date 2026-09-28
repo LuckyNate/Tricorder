@@ -1,6 +1,40 @@
 (() => {
 const { Observation, Sensor } = window.ScannerCore;
 
+const METERS_PER_DEGREE_LAT = 111320;
+const SOLVER_STEP_METERS = 8;
+const MIN_HEADING_SWEEP_DEGREES = 30;
+const MAX_SOLVER_RADIUS_METERS = 180;
+
+function metersPerDegreeLng(latitude) {
+  return METERS_PER_DEGREE_LAT * Math.cos(latitude * Math.PI / 180);
+}
+
+function offsetLatLng(latitude, longitude, eastMeters, northMeters) {
+  return {
+    latitude: latitude + northMeters / METERS_PER_DEGREE_LAT,
+    longitude: longitude + eastMeters / metersPerDegreeLng(latitude)
+  };
+}
+
+function distanceMeters(a, b) {
+  const meanLat = (a.latitude + b.latitude) * 0.5;
+  const north = (b.latitude - a.latitude) * METERS_PER_DEGREE_LAT;
+  const east = (b.longitude - a.longitude) * metersPerDegreeLng(meanLat);
+  return Math.hypot(east, north);
+}
+
+function bearingDegrees(a, b) {
+  const meanLat = (a.latitude + b.latitude) * 0.5;
+  const north = (b.latitude - a.latitude) * METERS_PER_DEGREE_LAT;
+  const east = (b.longitude - a.longitude) * metersPerDegreeLng(meanLat);
+  return (Math.atan2(east, north) * 180 / Math.PI + 360) % 360;
+}
+
+function angularDifferenceDegrees(a, b) {
+  return ((a - b + 540) % 360) - 180;
+}
+
 function weightedCenter(observations) {
   const valid = observations.filter(o => o.latitude !== null && o.longitude !== null);
   if (!valid.length) return null;
@@ -17,6 +51,39 @@ function weightedCenter(observations) {
   });
   if (!total) return { latitude: valid[valid.length - 1].latitude, longitude: valid[valid.length - 1].longitude };
   return { latitude: lat / total, longitude: lon / total };
+}
+
+function observationSpread(observations) {
+  const valid = observations.filter(o => o.latitude !== null && o.longitude !== null);
+  let spread = 0;
+  for (let i = 0; i < valid.length; i += 1) {
+    for (let j = i + 1; j < valid.length; j += 1) {
+      spread = Math.max(spread, distanceMeters(valid[i], valid[j]));
+    }
+  }
+  return spread;
+}
+
+function headingSweep(observations) {
+  const headings = observations
+    .filter(o => Number.isFinite(o.heading) && o.headingSource === 'orientation')
+    .map(o => ((o.heading % 360) + 360) % 360)
+    .sort((a, b) => a - b);
+  if (headings.length < 2) return 0;
+  let largestGap = 0;
+  for (let i = 0; i < headings.length; i += 1) {
+    const next = i === headings.length - 1 ? headings[0] + 360 : headings[i + 1];
+    largestGap = Math.max(largestGap, next - headings[i]);
+  }
+  return 360 - largestGap;
+}
+
+function headingAccuracyWeight(accuracy) {
+  const value = Number(accuracy) || 0;
+  if (value >= 3) return 1;
+  if (value === 2) return 0.75;
+  if (value === 1) return 0.45;
+  return 0.2;
 }
 
 class LocationSensor extends Sensor {
@@ -51,18 +118,170 @@ class RangedRadioSensor extends Sensor {
     return Math.max(0.75, Math.min(this.maxRange, meters));
   }
 
+  rangeSigma(observation) {
+    const expected = this.rangeFromRssi(observation.rssi);
+    const gps = Math.min(16, Math.max(0, Number(observation.accuracy) || 0) * 0.35);
+    return Math.max(3, expected * 0.30, gps);
+  }
+
+  observationWeight(observation, newestTimestamp) {
+    const ageSeconds = Math.max(0, (newestTimestamp - observation.timestamp) / 1000);
+    const recency = Math.exp(-ageSeconds / 300);
+    const gps = 1 / Math.max(4, Number(observation.accuracy) || 25);
+    const signal = Number.isFinite(observation.rssi)
+      ? Math.max(0.2, Math.min(1, (observation.rssi + 100) / 55))
+      : 0.2;
+    return recency * gps * signal;
+  }
+
+  solveDirectionalTarget(target) {
+    const observations = target.observations.filter(o =>
+      o.latitude !== null && o.longitude !== null && Number.isFinite(o.rssi)
+    );
+    if (!observations.length) return null;
+
+    const center = weightedCenter(observations);
+    if (!center) return null;
+
+    const spread = observationSpread(observations);
+    const sweep = headingSweep(observations);
+    const newest = Math.max(...observations.map(o => o.timestamp));
+    const expectedRanges = observations.map(o => this.rangeFromRssi(o.rssi));
+    const maxExpectedRange = Math.max(...expectedRanges);
+    const solverRadius = Math.min(
+      MAX_SOLVER_RADIUS_METERS,
+      Math.max(35, Math.min(this.maxRange + spread, maxExpectedRange + spread * 0.75 + 24))
+    );
+
+    const directional = observations.filter(o =>
+      Number.isFinite(o.heading) && o.headingSource === 'orientation'
+    );
+    const meanDirectionalRssi = directional.length
+      ? directional.reduce((sum, o) => sum + o.rssi, 0) / directional.length
+      : null;
+
+    let best = null;
+    let bestScore = -Infinity;
+    const candidates = [];
+
+    for (let north = -solverRadius; north <= solverRadius; north += SOLVER_STEP_METERS) {
+      for (let east = -solverRadius; east <= solverRadius; east += SOLVER_STEP_METERS) {
+        if (Math.hypot(east, north) > solverRadius) continue;
+        const candidate = offsetLatLng(center.latitude, center.longitude, east, north);
+        let score = 0;
+        let totalWeight = 0;
+
+        observations.forEach(observation => {
+          const expectedRange = this.rangeFromRssi(observation.rssi);
+          const actualRange = distanceMeters(observation, candidate);
+          const sigma = this.rangeSigma(observation);
+          const residual = actualRange - expectedRange;
+          const weight = this.observationWeight(observation, newest);
+          score += weight * -0.5 * Math.pow(residual / sigma, 2);
+          totalWeight += weight;
+
+          if (
+            meanDirectionalRssi !== null &&
+            Number.isFinite(observation.heading) &&
+            observation.headingSource === 'orientation' &&
+            sweep >= MIN_HEADING_SWEEP_DEGREES
+          ) {
+            const candidateBearing = bearingDegrees(observation, candidate);
+            const delta = angularDifferenceDegrees(candidateBearing, observation.heading);
+            const alignment = Math.cos(delta * Math.PI / 180);
+            const signalDelta = Math.max(-1.5, Math.min(1.5, (observation.rssi - meanDirectionalRssi) / 7));
+            score += weight * signalDelta * alignment * headingAccuracyWeight(observation.headingAccuracy) * 0.8;
+          }
+        });
+
+        if (totalWeight) score /= totalWeight;
+        if (score > bestScore) {
+          bestScore = score;
+          best = candidate;
+        }
+        candidates.push({ position: candidate, score });
+      }
+    }
+
+    if (!best || !candidates.length) return null;
+
+    let probabilityTotal = 0;
+    candidates.forEach(candidate => {
+      candidate.probability = Math.exp(candidate.score - bestScore);
+      probabilityTotal += candidate.probability;
+    });
+    if (!probabilityTotal) return null;
+
+    let meanEast = 0;
+    let meanNorth = 0;
+    candidates.forEach(candidate => {
+      candidate.probability /= probabilityTotal;
+      const meanLat = (center.latitude + candidate.position.latitude) * 0.5;
+      candidate.east = (candidate.position.longitude - center.longitude) * metersPerDegreeLng(meanLat);
+      candidate.north = (candidate.position.latitude - center.latitude) * METERS_PER_DEGREE_LAT;
+      meanEast += candidate.east * candidate.probability;
+      meanNorth += candidate.north * candidate.probability;
+    });
+
+    let variance = 0;
+    candidates.forEach(candidate => {
+      const dx = candidate.east - meanEast;
+      const dy = candidate.north - meanNorth;
+      variance += candidate.probability * (dx * dx + dy * dy);
+    });
+
+    const rmsSpread = Math.sqrt(variance);
+    const movementConfidence = Math.min(1, spread / 40);
+    const headingConfidence = Math.min(1, sweep / 180);
+    const countConfidence = Math.min(1, observations.length / 12);
+    const concentrationConfidence = Math.max(0, Math.min(1, 1 - rmsSpread / solverRadius));
+    const confidence = Math.max(
+      0.10,
+      Math.min(
+        0.96,
+        0.10 + countConfidence * 0.22 + movementConfidence * 0.28 +
+        headingConfidence * 0.18 + concentrationConfidence * 0.22
+      )
+    );
+
+    return {
+      position: best,
+      uncertaintyMeters: Math.max(3, Math.min(solverRadius, rmsSpread)),
+      confidence,
+      spread,
+      headingSweep: sweep
+    };
+  }
+
   updateTarget(target) {
-    const center = weightedCenter(target.observations);
-    if (!center) return;
     const ranged = target.observations.filter(o => Number.isFinite(o.rssi));
     const latest = target.observations[target.observations.length - 1];
+    if (!ranged.length) return;
+
+    const spread = observationSpread(ranged);
+    const sweep = headingSweep(ranged);
+    const hasGeometry = ranged.length >= 2 && (spread >= 2 || sweep >= MIN_HEADING_SWEEP_DEGREES);
+
+    if (hasGeometry) {
+      const solved = this.solveDirectionalTarget(target);
+      if (solved) {
+        target.position = solved.position;
+        target.uncertaintyMeters = solved.uncertaintyMeters;
+        target.confidence = solved.confidence;
+        target.directionSpreadMeters = solved.spread;
+        target.headingSweepDegrees = solved.headingSweep;
+        return;
+      }
+    }
+
+    const center = weightedCenter(target.observations);
+    if (!center) return;
     const ranges = ranged.map(o => this.rangeFromRssi(o.rssi));
-    const averageRange = ranges.length ? ranges.reduce((a, b) => a + b, 0) / ranges.length : this.maxRange;
+    const averageRange = ranges.reduce((a, b) => a + b, 0) / ranges.length;
     const countConfidence = Math.min(1, target.observations.length / 14);
-    const rangedConfidence = ranged.length ? 0.3 : 0;
     target.position = center;
-    target.uncertaintyMeters = Math.max(2.5, averageRange * (ranged.length > 2 ? 0.58 : 0.95), latest ? latest.accuracy : 10);
-    target.confidence = Math.max(0.08, Math.min(0.88, 0.12 + countConfidence * 0.46 + rangedConfidence));
+    target.uncertaintyMeters = Math.max(2.5, averageRange * 0.95, latest ? latest.accuracy : 10);
+    target.confidence = Math.max(0.08, Math.min(0.42, 0.10 + countConfidence * 0.32));
   }
 }
 
@@ -111,10 +330,13 @@ class BluetoothSensor extends RangedRadioSensor {
       const observation = new Observation(this.id, id, raw);
       if (observation.timestamp <= target.lastSeen && target.observations.length) return;
       target.addObservation(observation);
-      this.updateTarget(target);
-      if (!Number.isFinite(observation.rssi)) {
-        target.uncertaintyMeters = Math.max(target.uncertaintyMeters, 80);
-        target.confidence = Math.min(target.confidence, 0.12);
+      if (Number.isFinite(observation.rssi)) {
+        this.updateTarget(target);
+      } else {
+        const center = weightedCenter(target.observations);
+        if (center) target.position = center;
+        target.uncertaintyMeters = 80;
+        target.confidence = 0.08;
       }
     });
     [...this.targets.keys()].forEach(id => {
