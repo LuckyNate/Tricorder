@@ -16,15 +16,20 @@
       <div id="startupFault" hidden></div>
     </section>
 
+    <div id="rangeDock" aria-label="Radar range control">
+      <button id="range" type="button" aria-label="Change radar range">20 m radius</button>
+    </div>
+
     <section id="controls">
       <div id="controlTop">
         <div id="controlStatus">
           <div id="status">Starting scanner</div>
-          <button id="range" type="button" aria-label="Change radar range">20 m radius</button>
         </div>
         <div id="sourceStatus" aria-live="polite">Waiting for sensor samples</div>
-        <div id="sensorControls" aria-label="Scanner sensor layers"></div>
-        <div id="deviceLists" aria-label="Detected devices"></div>
+        <div id="listPanel">
+          <div id="sensorControls" aria-label="Scanner sensor key"></div>
+          <div id="deviceLists" aria-label="Detected devices"></div>
+        </div>
       </div>
 
       <button id="modeToggle" type="button" aria-pressed="false">
