@@ -49,6 +49,11 @@ class AppUpdater(
     fun checkForUpdates() {
         ensureReceiver()
 
+        val pendingVersion = prefs.getInt(PREF_VERSION_CODE, -1)
+        if (pendingVersion > 0 && pendingVersion <= BuildConfig.VERSION_CODE) {
+            clearPendingDownload()
+        }
+
         val pendingId = prefs.getLong(PREF_DOWNLOAD_ID, -1L)
         if (pendingId > 0L) {
             if (handleDownloadState(pendingId, launchInstaller = true)) return
@@ -176,6 +181,7 @@ class AppUpdater(
 
                 return when (cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))) {
                     DownloadManager.STATUS_SUCCESSFUL -> {
+                        clearPendingDownload()
                         postStatus("Update downloaded — opening installer")
                         if (launchInstaller) launchInstaller(id)
                         true
