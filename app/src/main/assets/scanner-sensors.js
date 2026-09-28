@@ -20,9 +20,8 @@ function weightedCenter(observations) {
 
 class LocationSensor extends Sensor {
   constructor() {
-    super({ id: 'location', label: 'LOCATION', color: '#F7F7F7' });
+    super({ id: 'location', label: 'LOCATION', color: '#F7F7F7', showList: false });
   }
-
   ingest(latitude, longitude, accuracy) {
     this.engine.radar.setLocation(Number(latitude), Number(longitude), Number(accuracy));
   }
@@ -30,9 +29,8 @@ class LocationSensor extends Sensor {
 
 class HeadingSensor extends Sensor {
   constructor() {
-    super({ id: 'heading', label: 'HEADING', color: '#F2A65A' });
+    super({ id: 'heading', label: 'HEADING', color: '#F2A65A', showList: false });
   }
-
   ingest(heading) {
     this.engine.radar.setHeading(Number(heading));
   }
@@ -62,21 +60,14 @@ class RangedRadioSensor extends Sensor {
     const countConfidence = Math.min(1, target.observations.length / 14);
     const rangedConfidence = ranged.length ? 0.3 : 0;
     target.position = center;
-    target.uncertaintyMeters = Math.max(2.5, averageRange * (ranged.length > 2 ? 0.58 : 0.95), latest?.accuracy || 10);
+    target.uncertaintyMeters = Math.max(2.5, averageRange * (ranged.length > 2 ? 0.58 : 0.95), latest ? latest.accuracy : 10);
     target.confidence = Math.max(0.08, Math.min(0.88, 0.12 + countConfidence * 0.46 + rangedConfidence));
   }
 }
 
 class WifiSensor extends RangedRadioSensor {
   constructor() {
-    super({
-      id: 'wifi',
-      label: 'WI-FI',
-      color: '#39D353',
-      rssiAtOneMeter: -45,
-      pathLossExponent: 2.6,
-      maxRange: 150
-    });
+    super({ id: 'wifi', label: 'WI-FI', color: '#39D353', rssiAtOneMeter: -45, pathLossExponent: 2.6, maxRange: 150 });
   }
 
   ingest(rows) {
@@ -103,14 +94,7 @@ class WifiSensor extends RangedRadioSensor {
 
 class BluetoothSensor extends RangedRadioSensor {
   constructor() {
-    super({
-      id: 'bluetooth',
-      label: 'BLUETOOTH',
-      color: '#0082FC',
-      rssiAtOneMeter: -59,
-      pathLossExponent: 2.2,
-      maxRange: 80
-    });
+    super({ id: 'bluetooth', label: 'BLUETOOTH', color: '#0082FC', rssiAtOneMeter: -59, pathLossExponent: 2.2, maxRange: 80 });
   }
 
   ingest(rows) {
@@ -156,16 +140,9 @@ class NetworkSensor extends Sensor {
       target.lastSeen = Number(raw.timestamp) || Date.now();
       const lat = Number(raw.latitude);
       const lon = Number(raw.longitude);
-      if (Number.isFinite(lat) && Number.isFinite(lon)) {
-        target.position = { latitude: lat, longitude: lon };
-      } else if (this.engine.radar.location) {
-        target.position = {
-          latitude: this.engine.radar.location.latitude,
-          longitude: this.engine.radar.location.longitude
-        };
-      }
+      target.position = Number.isFinite(lat) && Number.isFinite(lon) ? { latitude: lat, longitude: lon } : null;
       target.uncertaintyMeters = 80;
-      target.confidence = 0.08;
+      target.confidence = target.position ? 0.08 : 0;
     });
     [...this.targets.keys()].forEach(id => {
       if (!seen.has(id)) this.targets.delete(id);

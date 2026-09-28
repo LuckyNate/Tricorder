@@ -5,16 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
   <meta name="theme-color" content="#07110d">
   <title>Tricorder</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <main id="app">
     <section id="viewPane">
       <div id="mapRotator"><div id="map"></div></div>
-      <div id="mapFallback" hidden></div>
       <div id="phoneReticle" aria-hidden="true"></div>
       <div id="threeDView" hidden>3D SENSOR VIEW</div>
+      <div id="startupFault" hidden></div>
     </section>
 
     <section id="controls">
@@ -33,7 +32,24 @@
     </section>
   </main>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    (function () {
+      const fault = document.getElementById('startupFault');
+      function showFault(message) {
+        if (!fault) return;
+        fault.hidden = false;
+        fault.textContent = 'SCANNER FAULT: ' + String(message || 'unknown error');
+      }
+      window.__tricorderShowFault = showFault;
+      window.addEventListener('error', function (event) {
+        showFault(event.message || (event.error && event.error.message) || 'JavaScript error');
+      });
+      window.addEventListener('unhandledrejection', function (event) {
+        const reason = event.reason;
+        showFault(reason && reason.message ? reason.message : reason);
+      });
+    }());
+  </script>
   <script src="scanner-core.js"></script>
   <script src="scanner-sensors.js"></script>
   <script src="app.js"></script>

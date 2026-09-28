@@ -36,28 +36,22 @@ class Target {
 }
 
 class Sensor {
-  constructor({ id, label, color }) {
+  constructor({ id, label, color, showList = true }) {
     this.id = id;
     this.label = label;
     this.color = color;
+    this.showList = showList;
     this.enabled = true;
     this.targets = new Map();
     this.engine = null;
   }
 
-  attach(engine) {
-    this.engine = engine;
-  }
-
+  attach(engine) { this.engine = engine; }
   setEnabled(enabled) {
     this.enabled = Boolean(enabled);
     if (this.engine) this.engine.refreshControls();
   }
-
-  toggle() {
-    this.setEnabled(!this.enabled);
-  }
-
+  toggle() { this.setEnabled(!this.enabled); }
   getOrCreateTarget(id, name) {
     let target = this.targets.get(id);
     if (!target) {
@@ -67,7 +61,6 @@ class Sensor {
     if (name) target.name = name;
     return target;
   }
-
   ingest() {}
   updateTarget() {}
   frame() {}
@@ -78,145 +71,185 @@ class RadarView {
     this.rangeMeters = 20;
     this.location = null;
     this.heading = 0;
-    this.map = null;
-    this.rangeRing = null;
-    this.targetLayers = new Map();
-    this.pingLayers = [];
+    this.zoom = 18;
+    this.tileSize = 256;
     this.mapEl = document.getElementById('map');
     this.rotatorEl = document.getElementById('mapRotator');
-    this.fallbackEl = document.getElementById('mapFallback');
+    this.targetLayer = null;
+    this.tileLayer = null;
+    this.rangeRing = null;
+    this.centerDot = null;
+    this.resizeObserver = null;
     this.initMap();
   }
 
   initMap() {
-    if (typeof L === 'undefined') {
-      this.fallbackEl.hidden = false;
-      this.fallbackEl.textContent = 'MAP ENGINE OFFLINE';
-      return;
+    if (!this.mapEl) throw new Error('Map element missing');
+    this.mapEl.replaceChildren();
+    this.mapEl.classList.add('local-map');
+
+    this.tileLayer = document.createElement('div');
+    this.tileLayer.className = 'tile-layer';
+    this.targetLayer = document.createElement('div');
+    this.targetLayer.className = 'target-layer';
+    this.rangeRing = document.createElement('div');
+    this.rangeRing.className = 'range-ring';
+    this.centerDot = document.createElement('div');
+    this.centerDot.className = 'map-center-dot';
+
+    this.mapEl.append(this.tileLayer, this.targetLayer, this.rangeRing, this.centerDot);
+
+    if ('ResizeObserver' in window) {
+      this.resizeObserver = new ResizeObserver(() => this.renderMap());
+      this.resizeObserver.observe(this.mapEl);
     }
-    this.map = L.map(this.mapEl, {
-      zoomControl: false,
-      attributionControl: false,
-      dragging: false,
-      doubleClickZoom: false,
-      scrollWheelZoom: false,
-      boxZoom: false,
-      keyboard: false,
-      tap: false,
-      touchZoom: false,
-      zoomSnap: 0.01
-    });
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 20,
-      updateWhenIdle: false,
-      keepBuffer: 4
-    }).addTo(this.map);
-    this.map.setView([39.82, -75.42], 17);
+    this.renderMap();
+  }
+
+  lonToWorldX(lon, zoom) {
+    return ((lon + 180) / 360) * this.tileSize * Math.pow(2, zoom);
+  }
+
+  latToWorldY(lat, zoom) {
+    const clipped = Math.max(-85.05112878, Math.min(85.05112878, lat));
+    const rad = clipped * Math.PI / 180;
+    const merc = Math.log(Math.tan(Math.PI / 4 + rad / 2));
+    return (1 - merc / Math.PI) / 2 * this.tileSize * Math.pow(2, zoom);
+  }
+
+  zoomForRange() {
+    if (!this.location || !this.mapEl) return 18;
+    const minDimension = Math.max(220, Math.min(this.mapEl.clientWidth || 320, this.mapEl.clientHeight || 320));
+    const desiredMetersPerPixel = Math.max(0.05, this.rangeMeters / (minDimension * 0.36));
+    const latitudeRadians = this.location.latitude * Math.PI / 180;
+    const baseMetersPerPixel = 156543.03392 * Math.cos(latitudeRadians);
+    return Math.max(3, Math.min(20, Math.round(Math.log2(baseMetersPerPixel / desiredMetersPerPixel))));
+  }
+
+  metersPerPixel() {
+    if (!this.location) return 1;
+    return 156543.03392 * Math.cos(this.location.latitude * Math.PI / 180) / Math.pow(2, this.zoom);
   }
 
   setLocation(latitude, longitude, accuracy) {
     if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
     this.location = { latitude, longitude, accuracy: Number(accuracy) || 25 };
-    if (this.map) {
-      this.map.setView([latitude, longitude], this.map.getZoom(), { animate: false });
-      this.updateRangeRing();
-    }
+    this.renderMap();
   }
 
   setHeading(degrees) {
     if (!Number.isFinite(Number(degrees))) return;
     this.heading = Number(degrees);
-    if (this.rotatorEl) {
-      this.rotatorEl.style.transform = `rotate(${-this.heading}deg) scale(1.34)`;
-    }
+    if (this.rotatorEl) this.rotatorEl.style.transform = `rotate(${-this.heading}deg) scale(1.18)`;
   }
 
   setRange(meters) {
-    this.rangeMeters = meters;
-    this.updateRangeRing();
+    this.rangeMeters = Number(meters) || 20;
+    this.renderMap();
   }
 
-  updateRangeRing() {
-    if (!this.map || !this.location) return;
-    if (this.rangeRing) this.map.removeLayer(this.rangeRing);
-    this.rangeRing = L.circle([this.location.latitude, this.location.longitude], {
-      radius: this.rangeMeters,
-      color: '#9fffd0',
-      weight: 1,
-      opacity: 0.8,
-      fill: false,
-      interactive: false
-    }).addTo(this.map);
-    const bounds = this.rangeRing.getBounds();
-    this.map.fitBounds(bounds, { padding: [18, 18], animate: false, maxZoom: 20 });
-  }
+  renderMap() {
+    if (!this.mapEl || !this.tileLayer || !this.rangeRing) return;
+    const width = this.mapEl.clientWidth || 320;
+    const height = this.mapEl.clientHeight || 320;
 
-  clearTargetLayers() {
-    if (!this.map) return;
-    this.targetLayers.forEach(layer => this.map.removeLayer(layer));
-    this.targetLayers.clear();
-  }
+    if (!this.location) {
+      this.tileLayer.replaceChildren();
+      this.rangeRing.style.width = '45%';
+      this.rangeRing.style.height = '45%';
+      this.rangeRing.style.left = '27.5%';
+      this.rangeRing.style.top = '27.5%';
+      return;
+    }
 
-  renderSensor(sensor) {
-    if (!this.map || !sensor.enabled) return;
-    sensor.targets.forEach(target => {
-      if (!target.position) return;
-      const key = `${sensor.id}:${target.id}`;
-      const layers = [];
-      const opacity = Math.max(0.12, Math.min(0.55, 0.12 + target.confidence * 0.43));
-      const radius = Math.max(1.5, Number(target.uncertaintyMeters) || 1.5);
-      layers.push(L.circle([target.position.latitude, target.position.longitude], {
-        radius,
-        stroke: true,
-        color: sensor.color,
-        weight: 1,
-        opacity: Math.min(0.9, opacity + 0.2),
-        fillColor: sensor.color,
-        fillOpacity: opacity,
-        interactive: false
-      }));
-      if (target.confidence >= 0.62) {
-        layers.push(L.circleMarker([target.position.latitude, target.position.longitude], {
-          radius: 4,
-          stroke: false,
-          fillColor: sensor.color,
-          fillOpacity: 0.95,
-          interactive: false
-        }));
+    this.zoom = this.zoomForRange();
+    const centerX = this.lonToWorldX(this.location.longitude, this.zoom);
+    const centerY = this.latToWorldY(this.location.latitude, this.zoom);
+    const startX = Math.floor((centerX - width / 2) / this.tileSize) - 1;
+    const endX = Math.floor((centerX + width / 2) / this.tileSize) + 1;
+    const startY = Math.floor((centerY - height / 2) / this.tileSize) - 1;
+    const endY = Math.floor((centerY + height / 2) / this.tileSize) + 1;
+    const tileCount = Math.pow(2, this.zoom);
+
+    const fragment = document.createDocumentFragment();
+    for (let y = startY; y <= endY; y += 1) {
+      if (y < 0 || y >= tileCount) continue;
+      for (let x = startX; x <= endX; x += 1) {
+        const wrappedX = ((x % tileCount) + tileCount) % tileCount;
+        const img = document.createElement('img');
+        img.className = 'map-tile';
+        img.alt = '';
+        img.draggable = false;
+        img.src = `https://tile.openstreetmap.org/${this.zoom}/${wrappedX}/${y}.png`;
+        img.style.left = `${x * this.tileSize - centerX + width / 2}px`;
+        img.style.top = `${y * this.tileSize - centerY + height / 2}px`;
+        fragment.appendChild(img);
       }
-      const group = L.layerGroup(layers).addTo(this.map);
-      this.targetLayers.set(key, group);
-    });
+    }
+    this.tileLayer.replaceChildren(fragment);
+
+    const pixels = Math.max(8, this.rangeMeters / this.metersPerPixel());
+    this.rangeRing.style.width = `${pixels * 2}px`;
+    this.rangeRing.style.height = `${pixels * 2}px`;
+    this.rangeRing.style.left = `${width / 2 - pixels}px`;
+    this.rangeRing.style.top = `${height / 2 - pixels}px`;
+  }
+
+  project(position) {
+    if (!this.location || !position || !this.mapEl) return null;
+    const width = this.mapEl.clientWidth || 320;
+    const height = this.mapEl.clientHeight || 320;
+    const centerX = this.lonToWorldX(this.location.longitude, this.zoom);
+    const centerY = this.latToWorldY(this.location.latitude, this.zoom);
+    const x = this.lonToWorldX(position.longitude, this.zoom) - centerX + width / 2;
+    const y = this.latToWorldY(position.latitude, this.zoom) - centerY + height / 2;
+    return { x, y };
   }
 
   render(engine) {
-    this.clearTargetLayers();
-    engine.sensors.forEach(sensor => this.renderSensor(sensor));
+    if (!this.targetLayer) return;
+    this.targetLayer.replaceChildren();
+    engine.sensors.forEach(sensor => {
+      if (!sensor.enabled) return;
+      sensor.targets.forEach(target => {
+        if (!target.position) return;
+        const point = this.project(target.position);
+        if (!point) return;
+        const radiusPx = Math.max(5, Math.min(140, (target.uncertaintyMeters || 5) / this.metersPerPixel()));
+        const cloud = document.createElement('div');
+        cloud.className = 'target-cloud';
+        cloud.style.setProperty('--sensor-color', sensor.color);
+        cloud.style.width = `${radiusPx * 2}px`;
+        cloud.style.height = `${radiusPx * 2}px`;
+        cloud.style.left = `${point.x - radiusPx}px`;
+        cloud.style.top = `${point.y - radiusPx}px`;
+        cloud.style.opacity = String(Math.max(0.16, Math.min(0.82, 0.2 + target.confidence * 0.62)));
+        this.targetLayer.appendChild(cloud);
+
+        if (target.confidence >= 0.62) {
+          const dot = document.createElement('div');
+          dot.className = 'target-dot';
+          dot.style.setProperty('--sensor-color', sensor.color);
+          dot.style.left = `${point.x - 4}px`;
+          dot.style.top = `${point.y - 4}px`;
+          this.targetLayer.appendChild(dot);
+        }
+      });
+    });
   }
 
   ping(target) {
-    if (!this.map || !target || !target.position) return;
-    const center = [target.position.latitude, target.position.longitude];
-    const color = target.sensor.color;
-    const start = performance.now();
-    const duration = 900;
-    const maxRadius = Math.max(8, Math.min(45, (target.uncertaintyMeters || 12) * 0.8));
-    const ring = L.circle(center, {
-      radius: 1,
-      color,
-      weight: 3,
-      opacity: 1,
-      fill: false,
-      interactive: false
-    }).addTo(this.map);
-    const animate = now => {
-      const t = Math.min(1, (now - start) / duration);
-      ring.setRadius(1 + maxRadius * t);
-      ring.setStyle({ opacity: 1 - t, weight: 3 - 2 * t });
-      if (t < 1) requestAnimationFrame(animate);
-      else this.map.removeLayer(ring);
-    };
-    requestAnimationFrame(animate);
+    if (!target || !target.position || !this.targetLayer) return false;
+    const point = this.project(target.position);
+    if (!point) return false;
+    const ping = document.createElement('div');
+    ping.className = 'target-ping';
+    ping.style.setProperty('--sensor-color', target.sensor.color);
+    ping.style.left = `${point.x}px`;
+    ping.style.top = `${point.y}px`;
+    this.targetLayer.appendChild(ping);
+    ping.addEventListener('animationend', () => ping.remove(), { once: true });
+    return true;
   }
 }
 
@@ -238,13 +271,8 @@ class ScannerEngine {
     return sensor;
   }
 
-  get(id) {
-    return this.sensors.get(id) || null;
-  }
-
-  start() {
-    requestAnimationFrame(this.frame);
-  }
+  get(id) { return this.sensors.get(id) || null; }
+  start() { requestAnimationFrame(this.frame); }
 
   frame(now) {
     if (now - this.lastFrame >= 1000 / 30) {
@@ -264,7 +292,11 @@ class ScannerEngine {
       button.type = 'button';
       button.className = `sensor-key${sensor.enabled ? '' : ' sensor-off'}`;
       button.style.setProperty('--sensor-color', sensor.color);
-      button.innerHTML = `<span class="sensor-swatch"></span><span>${sensor.label}</span>`;
+      const swatch = document.createElement('span');
+      swatch.className = 'sensor-swatch';
+      const label = document.createElement('span');
+      label.textContent = sensor.label;
+      button.append(swatch, label);
       button.addEventListener('click', () => sensor.toggle());
       this.controlsEl.appendChild(button);
     });
@@ -275,6 +307,7 @@ class ScannerEngine {
     if (!this.listsEl) return;
     this.listsEl.replaceChildren();
     this.sensors.forEach(sensor => {
+      if (!sensor.showList) return;
       const section = document.createElement('section');
       section.className = 'device-section';
       section.style.setProperty('--sensor-color', sensor.color);
@@ -296,10 +329,16 @@ class ScannerEngine {
           row.className = 'device-row';
           const meters = Math.round(target.uncertaintyMeters || 0);
           const confidence = Math.round((target.confidence || 0) * 100);
-          row.innerHTML = `<span class="device-name"></span><span class="device-meta"></span>`;
-          row.querySelector('.device-name').textContent = target.name || target.id;
-          row.querySelector('.device-meta').textContent = `${target.kind || sensor.id} · ±${meters}m · ${confidence}%${target.detail ? ` · ${target.detail}` : ''}`;
-          row.addEventListener('click', () => this.radar.ping(target));
+          const name = document.createElement('span');
+          name.className = 'device-name';
+          name.textContent = target.name || target.id;
+          const meta = document.createElement('span');
+          meta.className = 'device-meta';
+          meta.textContent = `${target.kind || sensor.id} · ±${meters}m · ${confidence}%${target.detail ? ` · ${target.detail}` : ''}`;
+          row.append(name, meta);
+          row.addEventListener('click', () => {
+            if (!this.radar.ping(target)) this.setStatus(`${sensor.label}: location unresolved`);
+          });
           section.appendChild(row);
         });
       }
