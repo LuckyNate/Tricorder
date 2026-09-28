@@ -45,6 +45,7 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     private lateinit var wifiManager: WifiManager
     private lateinit var sensorManager: SensorManager
     private lateinit var bluetoothScanner: BluetoothScanner
+    private lateinit var nearbyNetworkScanner: NearbyNetworkScanner
     private val handler = Handler(Looper.getMainLooper())
 
     private var latestLocation: Location? = null
@@ -84,6 +85,7 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
             requestWifiScan()
             sendWifiResults()
             sendBluetoothResults()
+            sendNearbyNetworkResults()
             latestLocation?.let(::sendLocation)
             sendHeading()
             handler.postDelayed(this, SENSOR_FRAME_INTERVAL_MS)
@@ -122,6 +124,7 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         wifiManager = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         bluetoothScanner = BluetoothScanner(applicationContext)
+        nearbyNetworkScanner = NearbyNetworkScanner(applicationContext)
         requestSensorPermissions()
     }
 
@@ -173,6 +176,7 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         startHeadingUpdates()
         startWifiScanning()
         startBluetoothScanning()
+        startNearbyNetworkScanning()
         startSensorFrameLoop()
     }
 
@@ -343,6 +347,10 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         bluetoothScanner.start()
     }
 
+    private fun startNearbyNetworkScanning() {
+        nearbyNetworkScanner.start()
+    }
+
     private fun startSensorFrameLoop() {
         handler.removeCallbacks(sensorFrameLoop)
         handler.post(sensorFrameLoop)
@@ -400,6 +408,12 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
             headingSource
         )
         val script = "window.Tricorder && window.Tricorder.onBluetoothScan && window.Tricorder.onBluetoothScan($observations);"
+        runOnUiThread { webView.evaluateJavascript(script, null) }
+    }
+
+    private fun sendNearbyNetworkResults() {
+        val observations = nearbyNetworkScanner.frame(latestLocation)
+        val script = "window.Tricorder && window.Tricorder.onNearbyNetworkScan && window.Tricorder.onNearbyNetworkScan($observations);"
         runOnUiThread { webView.evaluateJavascript(script, null) }
     }
 
@@ -487,7 +501,8 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
             ::locationManager.isInitialized &&
             ::wifiManager.isInitialized &&
             ::sensorManager.isInitialized &&
-            ::bluetoothScanner.isInitialized
+            ::bluetoothScanner.isInitialized &&
+            ::nearbyNetworkScanner.isInitialized
         ) {
             requestSensorPermissions()
         }
@@ -498,6 +513,9 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         handler.removeCallbacks(sensorFrameLoop)
         if (::bluetoothScanner.isInitialized) {
             bluetoothScanner.stop()
+        }
+        if (::nearbyNetworkScanner.isInitialized) {
+            nearbyNetworkScanner.stop()
         }
         if (::sensorManager.isInitialized) {
             sensorManager.unregisterListener(this)
