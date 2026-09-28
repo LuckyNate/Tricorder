@@ -38,6 +38,8 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     private data class HeadingSample(
         val timestampNanos: Long,
         val heading: Float,
+        val pitch: Float,
+        val roll: Float,
         val accuracy: Int,
         val source: String
     )
@@ -57,6 +59,8 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     private var latestGpsLocation: Location? = null
     private var latestNetworkLocation: Location? = null
     private var latestHeadingDegrees: Float? = null
+    private var latestPitchDegrees = 0f
+    private var latestRollDegrees = 0f
     private var headingAccuracy = SensorManager.SENSOR_STATUS_UNRELIABLE
     private var headingSource = "none"
     private val locationHistory = ArrayDeque<Location>()
@@ -290,13 +294,17 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         if (!SensorManager.remapCoordinateSystem(rawRotation, axisX, axisY, screenRotation)) return
         SensorManager.getOrientation(screenRotation, orientation)
 
-        var heading = (orientation[0] * 180f / PI.toFloat())
+        var heading = orientation[0] * 180f / PI.toFloat()
         if (heading < 0f) heading += 360f
         heading = magneticToTrueHeading(heading)
+        val pitch = orientation[1] * 180f / PI.toFloat()
+        val roll = orientation[2] * 180f / PI.toFloat()
 
         latestHeadingDegrees = heading
+        latestPitchDegrees = pitch
+        latestRollDegrees = roll
         headingSource = "orientation"
-        recordHeadingSample(event.timestamp, heading, headingAccuracy, headingSource)
+        recordHeadingSample(event.timestamp, heading, pitch, roll, headingAccuracy, headingSource)
     }
 
     private fun magneticToTrueHeading(magneticHeading: Float): Float {
@@ -317,8 +325,15 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         }
     }
 
-    private fun recordHeadingSample(timestampNanos: Long, heading: Float, accuracy: Int, source: String) {
-        headingHistory.addLast(HeadingSample(timestampNanos, heading, accuracy, source))
+    private fun recordHeadingSample(
+        timestampNanos: Long,
+        heading: Float,
+        pitch: Float,
+        roll: Float,
+        accuracy: Int,
+        source: String
+    ) {
+        headingHistory.addLast(HeadingSample(timestampNanos, heading, pitch, roll, accuracy, source))
         while (headingHistory.size > MAX_HEADING_HISTORY) headingHistory.removeFirst()
     }
 
@@ -344,11 +359,15 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         val location = latestLocation ?: return
         if (location.hasBearing() && location.speed >= 0.5f) {
             latestHeadingDegrees = ((location.bearing % 360f) + 360f) % 360f
+            latestPitchDegrees = 0f
+            latestRollDegrees = 0f
             headingAccuracy = SensorManager.SENSOR_STATUS_ACCURACY_MEDIUM
             headingSource = "motion"
             recordHeadingSample(
                 SystemClock.elapsedRealtimeNanos(),
                 latestHeadingDegrees!!,
+                latestPitchDegrees,
+                latestRollDegrees,
                 headingAccuracy,
                 headingSource
             )
@@ -501,9 +520,15 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
                         put("latitude", it.latitude)
                         put("longitude", it.longitude)
                         put("accuracy", it.accuracy)
+                        if (it.hasAltitude()) put("altitude", it.altitude)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && it.hasVerticalAccuracy()) {
+                            put("verticalAccuracy", it.verticalAccuracyMeters)
+                        }
                     }
                     heading?.takeIf { abs(it.timestampNanos - sampleTimeNanos) <= 2_000_000_000L }?.let {
                         put("heading", it.heading)
+                        put("pitch", it.pitch)
+                        put("roll", it.roll)
                         put("headingSource", it.source)
                         put("headingAccuracy", it.accuracy)
                     }
@@ -589,16 +614,20 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     }
 
     private fun sendLocation(location: Location) {
-        val bearing = if (location.hasBearing()) location.bearing else Float.NaN
-        val speed = if (location.hasSpeed()) location.speed else 0f
-        val script = "window.Tricorder && window.Tricorder.onLocation(${location.latitude},${location.longitude},${location.accuracy},$bearing,$speed);"
+        val altitude = if (location.hasAltitude()) location.altitude else Double.NaN
+        val verticalAccuracy = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && location.hasVerticalAccuracy()) {
+            location.verticalAccuracyMeters
+        } else {
+            Float.NaN
+        }
+        val script = "window.Tricorder && window.Tricorder.onLocation(${location.latitude},${location.longitude},${location.accuracy},$altitude,$verticalAccuracy);"
         runOnUiThread { webView.evaluateJavascript(script, null) }
     }
 
     private fun sendHeading() {
         val heading = latestHeadingDegrees ?: return
         val source = headingSource.replace("\\", "\\\\").replace("'", "\\'")
-        val script = "window.Tricorder && window.Tricorder.onHeading($heading,$headingAccuracy,'$source');"
+        val script = "window.Tricorder && window.Tricorder.onHeading($heading,$headingAccuracy,'$source',$latestPitchDegrees,$latestRollDegrees);"
         runOnUiThread { webView.evaluateJavascript(script, null) }
     }
 
