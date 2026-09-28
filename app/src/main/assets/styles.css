@@ -6,15 +6,21 @@ button { font:inherit; }
 #mapRotator { position:absolute; inset:-9%; transform-origin:50% 50%; }
 #map { width:100%; height:100%; background:#0a1712; }
 .local-map { position:relative; overflow:hidden; background-color:#0a1712; background-image:linear-gradient(#16322655 1px,transparent 1px),linear-gradient(90deg,#16322655 1px,transparent 1px); background-size:32px 32px; }
-.tile-layer,.target-layer { position:absolute; inset:0; overflow:hidden; }
+.tile-layer,.target-layer,.ping-layer { position:absolute; inset:0; overflow:hidden; }
 .map-tile { position:absolute; width:256px; height:256px; user-select:none; pointer-events:none; }
-.target-layer { pointer-events:none; }
+.target-layer,.ping-layer { pointer-events:none; }
 .range-ring { position:absolute; box-sizing:border-box; border:1px solid #9fffd0; border-radius:50%; box-shadow:0 0 10px #9fffd055; pointer-events:none; }
 .map-center-dot { position:absolute; left:50%; top:50%; width:6px; height:6px; margin:-3px 0 0 -3px; border-radius:50%; background:#9fffd0; box-shadow:0 0 10px #9fffd0; }
 .target-cloud { position:absolute; border-radius:50%; box-sizing:border-box; border:1px solid var(--sensor-color); background:color-mix(in srgb,var(--sensor-color) 25%,transparent); box-shadow:0 0 14px color-mix(in srgb,var(--sensor-color) 65%,transparent); }
 .target-dot { position:absolute; width:8px; height:8px; border-radius:50%; background:var(--sensor-color); box-shadow:0 0 10px var(--sensor-color); }
-.target-ping { position:absolute; width:10px; height:10px; margin:-5px 0 0 -5px; border:2px solid var(--sensor-color); border-radius:50%; animation:targetPing .9s ease-out forwards; }
-@keyframes targetPing { from { transform:scale(.2); opacity:1; } to { transform:scale(12); opacity:0; } }
+.target-ripple { position:absolute; width:1px; height:1px; pointer-events:none; }
+.target-ripple-ring { position:absolute; left:0; top:0; width:14px; height:14px; margin:-7px 0 0 -7px; box-sizing:border-box; border:2px solid var(--sensor-color); border-radius:50%; opacity:0; box-shadow:0 0 10px color-mix(in srgb,var(--sensor-color) 55%,transparent), inset 0 0 6px color-mix(in srgb,var(--sensor-color) 18%,transparent); animation:targetRipple 2.2s cubic-bezier(.16,.68,.28,1) forwards; }
+@keyframes targetRipple {
+  0% { transform:scale(.35); opacity:0; border-width:3px; }
+  10% { opacity:.95; }
+  55% { opacity:.5; border-width:2px; }
+  100% { transform:scale(9); opacity:0; border-width:.75px; }
+}
 #phoneReticle { position:absolute; left:50%; top:50%; width:18px; height:18px; margin:-9px 0 0 -9px; border:2px solid #fff; border-radius:50%; box-shadow:0 0 0 4px #07110dbb,0 0 18px #9fffd0; pointer-events:none; }
 #phoneReticle::before,#phoneReticle::after { content:''; position:absolute; background:#fff; opacity:.9; }
 #phoneReticle::before { width:2px; height:28px; left:8px; top:-7px; }
