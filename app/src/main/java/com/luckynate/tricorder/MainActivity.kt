@@ -49,6 +49,7 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     private lateinit var nearbyNetworkScanner: NearbyNetworkScanner
     private lateinit var radioScanner: RadioScanner
     private lateinit var appUpdater: AppUpdater
+    private lateinit var stateStore: StateStore
     private val handler = Handler(Looper.getMainLooper())
 
     private var latestLocation: Location? = null
@@ -68,12 +69,15 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     private var lastRadioFrameAtMs = 0L
     private val availabilityStates = HashMap<String, String>()
     private var lastUpdateCheckAt = 0L
+    private var pageReady = false
+    private var recoveryAttempted = false
 
     companion object {
         private const val SENSOR_PERMISSION_REQUEST = 1001
         private const val SENSOR_FRAME_INTERVAL_MS = 33L
         private const val WIFI_SCAN_INTERVAL_MS = 30_000L
         private const val RADIO_FRAME_INTERVAL_MS = 1_000L
+        private const val STATE_SNAPSHOT_INTERVAL_MS = 10_000L
         private const val GPS_FRESH_NANOS = 30_000_000_000L
         private const val MAX_LOCATION_HISTORY = 128
         private const val MAX_HEADING_HISTORY = 256
@@ -104,9 +108,17 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         }
     }
 
+    private val stateSnapshotLoop = object : Runnable {
+        override fun run() {
+            requestStateSnapshot()
+            handler.postDelayed(this, STATE_SNAPSHOT_INTERVAL_MS)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        stateStore = StateStore(applicationContext)
         webView = WebView(this).apply {
             setBackgroundColor(0xFF07110D.toInt())
             webViewClient = object : WebViewClient() {
@@ -122,6 +134,15 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
                         }
                     }
                     return false
+                }
+
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    super.onPageFinished(view, url)
+                    if (url?.startsWith("file:///android_asset/index.html") != true) return
+                    pageReady = true
+                    restoreStateIfAvailable()
+                    handler.removeCallbacks(stateSnapshotLoop)
+                    handler.postDelayed(stateSnapshotLoop, STATE_SNAPSHOT_INTERVAL_MS)
                 }
             }
             settings.javaScriptEnabled = true
@@ -522,6 +543,32 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         runOnUiThread { webView.evaluateJavascript(script, null) }
     }
 
+    private fun requestStateSnapshot() {
+        if (!pageReady || !::stateStore.isInitialized) return
+        val script = "window.Tricorder && window.Tricorder.snapshotState ? window.Tricorder.snapshotState() : null;"
+        webView.evaluateJavascript(script) { value ->
+            val json = decodeJavascriptString(value) ?: return@evaluateJavascript
+            Thread { stateStore.write(json) }.start()
+        }
+    }
+
+    private fun decodeJavascriptString(value: String?): String? {
+        if (value == null || value == "null") return null
+        return try {
+            JSONArray("[$value]").getString(0)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun restoreStateIfAvailable() {
+        if (recoveryAttempted || !pageReady || !::stateStore.isInitialized) return
+        recoveryAttempted = true
+        val snapshot = stateStore.readNewestValid() ?: return
+        val script = "window.Tricorder && window.Tricorder.restoreState && window.Tricorder.restoreState($snapshot);"
+        webView.evaluateJavascript(script, null)
+    }
+
     private fun checkForUpdates() {
         if (::appUpdater.isInitialized) {
             appUpdater.checkForUpdates()
@@ -567,6 +614,10 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     override fun onResume() {
         super.onResume()
         checkForUpdates()
+        if (pageReady) {
+            handler.removeCallbacks(stateSnapshotLoop)
+            handler.postDelayed(stateSnapshotLoop, STATE_SNAPSHOT_INTERVAL_MS)
+        }
         if (
             ::locationManager.isInitialized &&
             ::wifiManager.isInitialized &&
@@ -581,6 +632,8 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
 
     override fun onPause() {
         super.onPause()
+        requestStateSnapshot()
+        handler.removeCallbacks(stateSnapshotLoop)
         handler.removeCallbacks(sensorFrameLoop)
         if (::bluetoothScanner.isInitialized) {
             bluetoothScanner.stop()
