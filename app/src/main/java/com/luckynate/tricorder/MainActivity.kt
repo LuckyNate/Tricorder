@@ -14,12 +14,14 @@ import android.hardware.SensorManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
+import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import org.json.JSONArray
@@ -93,7 +95,21 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
 
         webView = WebView(this).apply {
             setBackgroundColor(0xFF07110D.toInt())
-            webViewClient = WebViewClient()
+            webViewClient = object : WebViewClient() {
+                override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                    val uri = request?.url ?: return false
+                    val scheme = uri.scheme?.lowercase()
+                    if (scheme == "http" || scheme == "https") {
+                        return try {
+                            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(uri.toString())))
+                            true
+                        } catch (_: Exception) {
+                            false
+                        }
+                    }
+                    return false
+                }
+            }
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.allowFileAccess = true
