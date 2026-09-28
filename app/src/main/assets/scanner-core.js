@@ -313,7 +313,7 @@ class ScannerEngine {
   }
 
   register(sensor) {
-    sensor.attach(engine);
+    sensor.attach(this);
     this.sensors.set(sensor.id, sensor);
     this.refreshControls();
     return sensor;
