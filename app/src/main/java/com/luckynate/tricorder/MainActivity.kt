@@ -47,6 +47,7 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     private lateinit var sensorManager: SensorManager
     private lateinit var bluetoothScanner: BluetoothScanner
     private lateinit var nearbyNetworkScanner: NearbyNetworkScanner
+    private lateinit var radioScanner: RadioScanner
     private lateinit var appUpdater: AppUpdater
     private val handler = Handler(Looper.getMainLooper())
 
@@ -62,6 +63,8 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     private var lastSentLocationNanos = 0L
     private var lastBluetoothPayload: String? = null
     private var lastNetworkPayload: String? = null
+    private var lastRadioPayload: String? = null
+    private var lastRadioFrameAtMs = 0L
     private val availabilityStates = HashMap<String, String>()
     private var lastUpdateCheckAt = 0L
 
@@ -69,6 +72,7 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         private const val SENSOR_PERMISSION_REQUEST = 1001
         private const val SENSOR_FRAME_INTERVAL_MS = 33L
         private const val WIFI_SCAN_INTERVAL_MS = 30_000L
+        private const val RADIO_FRAME_INTERVAL_MS = 1_000L
         private const val MAX_LOCATION_HISTORY = 128
         private const val MAX_HEADING_HISTORY = 256
         private const val UPDATE_CHECK_THROTTLE_MS = 30_000L
@@ -91,6 +95,7 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
             requestWifiScan()
             sendBluetoothResults()
             sendNearbyNetworkResults()
+            sendRadioResults()
             latestLocation?.let { location ->
                 if (location.elapsedRealtimeNanos > lastSentLocationNanos) {
                     lastSentLocationNanos = location.elapsedRealtimeNanos
@@ -144,6 +149,7 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
             )
         }
         nearbyNetworkScanner = NearbyNetworkScanner(applicationContext)
+        radioScanner = RadioScanner(applicationContext)
         appUpdater = AppUpdater(this, ::sendStatus)
         requestSensorPermissions()
     }
@@ -194,6 +200,7 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         startWifiScanning()
         startBluetoothScanning()
         startNearbyNetworkScanning()
+        startRadioScanning()
         startSensorFrameLoop()
     }
 
@@ -396,6 +403,10 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         nearbyNetworkScanner.start()
     }
 
+    private fun startRadioScanning() {
+        radioScanner.start()
+    }
+
     private fun startSensorFrameLoop() {
         handler.removeCallbacks(sensorFrameLoop)
         handler.post(sensorFrameLoop)
@@ -476,6 +487,26 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         runOnUiThread { webView.evaluateJavascript(script, null) }
     }
 
+    private fun sendRadioResults() {
+        if (!::radioScanner.isInitialized) return
+        val nowMs = SystemClock.elapsedRealtime()
+        if (lastRadioFrameAtMs != 0L && nowMs - lastRadioFrameAtMs < RADIO_FRAME_INTERVAL_MS) return
+        lastRadioFrameAtMs = nowMs
+
+        val scanResults = try {
+            if (hasWifiPermission() && hasLocationPermission()) wifiManager.scanResults else emptyList()
+        } catch (_: SecurityException) {
+            emptyList()
+        }
+        val location = latestLocation
+        val pose = RadioScanner.ObserverPose(location?.latitude, location?.longitude, location?.accuracy)
+        val payload = radioScanner.frame(scanResults, pose).toString()
+        if (payload == lastRadioPayload) return
+        lastRadioPayload = payload
+        val script = "window.Tricorder && window.Tricorder.onRadioFrame && window.Tricorder.onRadioFrame($payload);"
+        runOnUiThread { webView.evaluateJavascript(script, null) }
+    }
+
     private fun checkForUpdates() {
         if (::appUpdater.isInitialized) {
             appUpdater.checkForUpdates()
@@ -526,7 +557,8 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
             ::wifiManager.isInitialized &&
             ::sensorManager.isInitialized &&
             ::bluetoothScanner.isInitialized &&
-            ::nearbyNetworkScanner.isInitialized
+            ::nearbyNetworkScanner.isInitialized &&
+            ::radioScanner.isInitialized
         ) {
             requestSensorPermissions()
         }
@@ -540,6 +572,9 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         }
         if (::nearbyNetworkScanner.isInitialized) {
             nearbyNetworkScanner.stop()
+        }
+        if (::radioScanner.isInitialized) {
+            radioScanner.stop()
         }
         if (::sensorManager.isInitialized) {
             sensorManager.unregisterListener(this)
