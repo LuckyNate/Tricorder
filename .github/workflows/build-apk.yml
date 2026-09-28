@@ -78,7 +78,7 @@ jobs:
         if: github.event_name != 'push' || github.ref != 'refs/heads/main'
         run: ./gradlew clean :app:assembleDebug --no-build-cache
 
-      - name: Name latest APK
+      - name: Name APKs
         run: |
           VERSION="0.1.${GITHUB_RUN_NUMBER}"
           if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ "${GITHUB_REF}" = "refs/heads/main" ]; then
@@ -86,13 +86,14 @@ jobs:
           else
             cp app/build/outputs/apk/debug/app-debug.apk Tricorder-latest.apk
           fi
+          cp Tricorder-latest.apk "Tricorder-${VERSION}.apk"
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: Tricorder-${{ env.VERSION }}
-          path: Tricorder-latest.apk
+          path: Tricorder-${{ env.VERSION }}.apk
           if-no-files-found: error
           retention-days: 30
 
@@ -112,6 +113,12 @@ jobs:
         run: |
           printf 'versionCode=%s\nversionName=0.1.%s\nAutomatically updated APK from main.\n' "$GITHUB_RUN_NUMBER" "$GITHUB_RUN_NUMBER" > release-notes.txt
           gh release edit latest --title "Tricorder — Latest Build" --notes-file release-notes.txt
+
+      - name: Publish versioned APK
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload latest "Tricorder-${VERSION}.apk"
 
       - name: Replace latest APK
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
