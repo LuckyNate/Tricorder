@@ -73,9 +73,8 @@
   }
 
   class GroundMapProjection {
-    constructor(world, cameraHeightMeters = 1.55) {
+    constructor(world) {
       this.world = world;
-      this.cameraHeightMeters = cameraHeightMeters;
     }
 
     vectorFor(position) {
@@ -84,7 +83,7 @@
       return new WorldVector3({
         east: horizontal.east,
         north: horizontal.north,
-        up: -this.cameraHeightMeters,
+        up: 0,
         horizontalUncertainty: 1,
         verticalUncertainty: 1
       });
@@ -108,11 +107,6 @@
       this.scene.prepend(this.svg);
       this.lastRenderedWorldVersion = -1;
       this.lastFeatureSignature = '';
-    }
-
-    setCameraHeight(meters) {
-      const value = Number(meters);
-      if (Number.isFinite(value) && value >= 0.5 && value <= 3) this.ground.cameraHeightMeters = value;
     }
 
     featureClass(kind) {
