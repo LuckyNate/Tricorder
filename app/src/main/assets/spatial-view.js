@@ -1,6 +1,7 @@
 (() => {
   const METERS_PER_DEGREE_LAT = 111320;
   const DEG = Math.PI / 180;
+  const FRAME_INTERVAL_MS = 1000 / 30;
 
   function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
@@ -43,6 +44,7 @@
       this.radar = radar;
       this.root = document.getElementById('threeDView');
       this.scene = document.getElementById('spatialScene');
+      this.camera = document.getElementById('spatialCamera');
       this.rangeMeters = radar ? radar.rangeMeters : 20;
       this.pose = {
         heading: 0,
@@ -51,12 +53,18 @@
         altitude: null,
         verticalAccuracy: null
       };
-      this.viewVersion = 0;
+      this.active = false;
+      this.cameraStream = null;
+      this.cameraStarting = false;
+      this.cameraHorizontalFov = 70;
+      this.lastRenderAt = 0;
       this.targetLayer = null;
       this.horizon = null;
       this.headingLabel = null;
       this.pitchLabel = null;
       this.rangeLabel = null;
+      this.cameraLabel = null;
+      this.nodes = new Map();
       this.initScene();
     }
 
@@ -96,7 +104,64 @@
       rangeReadout.innerHTML = 'R <span>20 m</span>';
       this.rangeLabel = rangeReadout.querySelector('span');
 
-      this.scene.append(grid, horizon, targets, reticle, headingReadout, pitchReadout, rangeReadout);
+      const cameraReadout = document.createElement('div');
+      cameraReadout.className = 'spatial-readout spatial-readout-camera';
+      cameraReadout.textContent = 'CAM OFF';
+      this.cameraLabel = cameraReadout;
+
+      this.scene.append(grid, horizon, targets, reticle, headingReadout, pitchReadout, rangeReadout, cameraReadout);
+    }
+
+    setActive(active) {
+      const next = Boolean(active);
+      if (next === this.active) return;
+      this.active = next;
+      if (this.active) this.startCamera();
+      else this.stopCamera();
+    }
+
+    async startCamera() {
+      if (!this.active || this.cameraStream || this.cameraStarting || !this.camera) return;
+      this.cameraStarting = true;
+      if (this.cameraLabel) this.cameraLabel.textContent = 'CAM START';
+      try {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('camera API unavailable');
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: {
+            facingMode: { ideal: 'environment' },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+            frameRate: { ideal: 30, max: 30 }
+          }
+        });
+        if (!this.active) {
+          stream.getTracks().forEach(track => track.stop());
+          return;
+        }
+        this.cameraStream = stream;
+        this.camera.srcObject = stream;
+        this.camera.muted = true;
+        this.camera.playsInline = true;
+        await this.camera.play();
+        if (this.cameraLabel) this.cameraLabel.textContent = 'CAM LIVE';
+      } catch (error) {
+        if (this.cameraLabel) this.cameraLabel.textContent = 'CAM BLOCKED';
+      } finally {
+        this.cameraStarting = false;
+      }
+    }
+
+    stopCamera() {
+      if (this.cameraStream) {
+        this.cameraStream.getTracks().forEach(track => track.stop());
+        this.cameraStream = null;
+      }
+      if (this.camera) {
+        this.camera.pause();
+        this.camera.srcObject = null;
+      }
+      if (this.cameraLabel) this.cameraLabel.textContent = 'CAM OFF';
     }
 
     setPose(pose = {}) {
@@ -105,26 +170,42 @@
       if (Number.isFinite(Number(pose.roll))) this.pose.roll = Number(pose.roll);
       if (Number.isFinite(Number(pose.altitude))) this.pose.altitude = Number(pose.altitude);
       if (Number.isFinite(Number(pose.verticalAccuracy))) this.pose.verticalAccuracy = Number(pose.verticalAccuracy);
-      this.viewVersion += 1;
     }
 
     setRange(meters) {
-      const next = Number(meters) || 20;
-      if (next === this.rangeMeters) return;
-      this.rangeMeters = next;
-      this.viewVersion += 1;
+      this.rangeMeters = Number(meters) || 20;
     }
 
     cameraElevationDegrees() {
-      // Android SensorManager pitch is opposite the rear-camera look elevation.
       return -Number(this.pose.pitch || 0);
     }
 
-    estimateVertical(target, observer, horizontalDistance) {
+    effectiveProjection() {
+      const width = this.scene ? (this.scene.clientWidth || 320) : 320;
+      const height = this.scene ? (this.scene.clientHeight || 320) : 320;
+      const videoWidth = this.camera && this.camera.videoWidth ? this.camera.videoWidth : width;
+      const videoHeight = this.camera && this.camera.videoHeight ? this.camera.videoHeight : height;
+      const videoAspect = Math.max(0.25, videoWidth / Math.max(1, videoHeight));
+      const viewportAspect = Math.max(0.25, width / Math.max(1, height));
+      let horizontalFov = this.cameraHorizontalFov * DEG;
+      let verticalFov = 2 * Math.atan(Math.tan(horizontalFov * 0.5) / videoAspect);
+
+      if (viewportAspect > videoAspect) {
+        verticalFov = 2 * Math.atan(Math.tan(verticalFov * 0.5) * (videoAspect / viewportAspect));
+      } else if (viewportAspect < videoAspect) {
+        horizontalFov = 2 * Math.atan(Math.tan(horizontalFov * 0.5) * (viewportAspect / videoAspect));
+      }
+
+      const focalX = (width * 0.5) / Math.tan(horizontalFov * 0.5);
+      const focalY = (height * 0.5) / Math.tan(verticalFov * 0.5);
+      return { width, height, focalX, focalY };
+    }
+
+    estimateVerticalCandidate(target, observer, horizontalDistance) {
       if (target.position && Number.isFinite(Number(target.position.altitude))) {
         return {
           altitude: Number(target.position.altitude),
-          uncertainty: Math.max(3, Number(target.uncertaintyMeters) || 5),
+          uncertainty: Math.max(2, Number(target.uncertaintyMeters) || 5),
           confidence: Number(target.confidence) || 0
         };
       }
@@ -176,19 +257,31 @@
       elevationMean /= samples.length;
       const elevationVariance = Math.max(0, elevationSq / samples.length - elevationMean * elevationMean);
       const elevationSigma = Math.sqrt(elevationVariance);
-
       const verticalOffset = Math.tan(elevation * DEG) * Math.max(0.5, horizontalDistance);
       const verticalUncertainty = Math.max(
-        Number(target.uncertaintyMeters) || 5,
+        3,
         Math.abs(Math.tan(Math.min(45, elevationSigma + 8) * DEG) * Math.max(1, horizontalDistance)),
         Number(this.pose.verticalAccuracy) || 0
       );
 
       return {
         altitude: observer.altitude + clamp(verticalOffset, -this.rangeMeters, this.rangeMeters),
-        uncertainty: clamp(verticalUncertainty, 4, this.rangeMeters),
+        uncertainty: clamp(verticalUncertainty, 3, this.rangeMeters),
         confidence: clamp(samples.length / 16, 0, 0.65)
       };
+    }
+
+    bestVertical(target, candidate) {
+      const previous = target.spatialVertical;
+      if (!previous) {
+        target.spatialVertical = candidate;
+        return candidate;
+      }
+      const uncertaintyNoWorse = candidate.uncertainty <= previous.uncertainty + 0.05;
+      const confidenceNoWorse = candidate.confidence + 0.005 >= previous.confidence;
+      const strictlyBetter = candidate.uncertainty < previous.uncertainty - 0.05 || candidate.confidence > previous.confidence + 0.005;
+      if (uncertaintyNoWorse && confidenceNoWorse && strictlyBetter) target.spatialVertical = candidate;
+      return target.spatialVertical;
     }
 
     spatialTarget(target) {
@@ -198,19 +291,18 @@
 
       const horizontal = horizontalOffsetMeters(observer, position);
       const horizontalDistance = Math.hypot(horizontal.east, horizontal.north);
-      const vertical = this.estimateVertical(target, observer, horizontalDistance);
+      const vertical = this.bestVertical(target, this.estimateVerticalCandidate(target, observer, horizontalDistance));
       const up = Number.isFinite(vertical.altitude) && Number.isFinite(observer.altitude)
         ? vertical.altitude - observer.altitude
         : 0;
       const distance = Math.hypot(horizontalDistance, up);
       const bearing = wrapDegrees(Math.atan2(horizontal.east, horizontal.north) / DEG);
       const elevation = Math.atan2(up, Math.max(0.001, horizontalDistance)) / DEG;
-      const uncertainty = Math.max(Number(target.uncertaintyMeters) || 5, vertical.uncertainty || 0);
 
       target.spatial = {
         altitude: vertical.altitude,
         verticalUncertaintyMeters: vertical.uncertainty,
-        uncertaintyMeters: uncertainty,
+        horizontalUncertaintyMeters: Number(target.uncertaintyMeters) || 5,
         confidence: Math.max(Number(target.confidence) || 0, vertical.confidence || 0)
       };
 
@@ -222,7 +314,8 @@
         distance,
         bearing,
         elevation,
-        uncertainty
+        horizontalUncertainty: Math.max(1, Number(target.uncertaintyMeters) || 5),
+        verticalUncertainty: Math.max(1, vertical.uncertainty || Number(target.uncertaintyMeters) || 5)
       };
     }
 
@@ -237,7 +330,6 @@
       let y = distance * Math.sin(pitchRad);
       const z = distance * Math.cos(pitchRad) * Math.cos(yawRad);
 
-      // Inverse camera roll: the world rotates opposite the handset.
       const roll = Number(this.pose.roll || 0) * DEG;
       const cos = Math.cos(roll);
       const sin = Math.sin(roll);
@@ -246,41 +338,52 @@
       x = rolledX;
       y = rolledY;
 
-      return { x, y, z, yaw, pitch };
+      return { x, y, z };
     }
 
     project(relative) {
-      if (!this.scene) return null;
       const camera = this.cameraRelative(relative);
       if (!camera || camera.z <= 0.05) return null;
-
-      const width = this.scene.clientWidth || 320;
-      const height = this.scene.clientHeight || 320;
-      const verticalFov = 68 * DEG;
-      const focal = (height * 0.5) / Math.tan(verticalFov * 0.5);
-
+      const projection = this.effectiveProjection();
       return {
-        x: width * 0.5 + (camera.x / camera.z) * focal,
-        y: height * 0.5 - (camera.y / camera.z) * focal,
+        x: projection.width * 0.5 + (camera.x / camera.z) * projection.focalX,
+        y: projection.height * 0.5 - (camera.y / camera.z) * projection.focalY,
         depth: camera.z,
-        focal,
-        width,
-        height
+        width: projection.width,
+        height: projection.height,
+        focalX: projection.focalX,
+        focalY: projection.focalY
       };
     }
 
     renderHorizon() {
       if (!this.horizon || !this.scene) return;
-      const height = this.scene.clientHeight || 320;
-      const verticalFov = 68 * DEG;
-      const focal = (height * 0.5) / Math.tan(verticalFov * 0.5);
+      const projection = this.effectiveProjection();
       const elevation = this.cameraElevationDegrees();
-      const offset = Math.tan(elevation * DEG) * focal;
-      this.horizon.style.transform = `translateY(${offset}px) rotate(${Number(this.pose.roll || 0)}deg)`;
+      const offset = Math.tan(elevation * DEG) * projection.focalY;
+      this.horizon.style.transform = `translate3d(0,${offset}px,0) rotate(${Number(this.pose.roll || 0)}deg)`;
     }
 
-    render(engine) {
-      if (!this.root || this.root.hidden || !this.scene || !this.targetLayer) return;
+    ensureNode(key, sensor) {
+      let node = this.nodes.get(key);
+      if (node) return node;
+      const cloud = document.createElement('div');
+      cloud.className = 'spatial-target-cloud';
+      cloud.style.setProperty('--sensor-color', sensor.color);
+      const dot = document.createElement('div');
+      dot.className = 'spatial-target-dot';
+      dot.style.setProperty('--sensor-color', sensor.color);
+      cloud.appendChild(dot);
+      this.targetLayer.appendChild(cloud);
+      node = { cloud, dot, seen: false };
+      this.nodes.set(key, node);
+      return node;
+    }
+
+    render(engine, now = performance.now()) {
+      if (!this.active || !this.root || this.root.hidden || !this.scene || !this.targetLayer) return;
+      if (now - this.lastRenderAt < FRAME_INTERVAL_MS) return;
+      this.lastRenderAt = now;
       this.rangeMeters = this.radar ? this.radar.rangeMeters : this.rangeMeters;
 
       if (this.headingLabel) this.headingLabel.textContent = `${Math.round(wrapDegrees(this.pose.heading || 0))}°`;
@@ -291,53 +394,57 @@
       if (this.rangeLabel) this.rangeLabel.textContent = `${Math.round(this.rangeMeters)} m`;
       this.renderHorizon();
 
-      this.targetLayer.replaceChildren();
+      this.nodes.forEach(node => { node.seen = false; });
 
       engine.sensors.forEach(sensor => {
         if (!sensor.enabled) return;
         sensor.targets.forEach(target => {
           if (!target.position) return;
-
           const spatial = this.spatialTarget(target);
           if (!spatial) return;
-          if (spatial.distance - spatial.uncertainty > this.rangeMeters) return;
-
+          if (spatial.distance - Math.max(spatial.horizontalUncertainty, spatial.verticalUncertainty) > this.rangeMeters) return;
           const projected = this.project(spatial);
           if (!projected) return;
 
-          const radiusPx = clamp(
-            Math.atan2(spatial.uncertainty, Math.max(0.5, projected.depth)) * projected.focal,
-            7,
-            Math.min(projected.width, projected.height) * 0.46
+          const radiusX = clamp(
+            Math.atan2(spatial.horizontalUncertainty, Math.max(0.5, projected.depth)) * projected.focalX,
+            8,
+            projected.width * 0.48
           );
-
+          const radiusY = clamp(
+            Math.atan2(spatial.verticalUncertainty, Math.max(0.5, projected.depth)) * projected.focalY,
+            8,
+            projected.height * 0.48
+          );
           if (
-            projected.x < -radiusPx || projected.x > projected.width + radiusPx ||
-            projected.y < -radiusPx || projected.y > projected.height + radiusPx
+            projected.x < -radiusX || projected.x > projected.width + radiusX ||
+            projected.y < -radiusY || projected.y > projected.height + radiusY
           ) return;
 
-          const sphere = document.createElement('div');
-          sphere.className = 'spatial-target-sphere';
-          sphere.style.setProperty('--sensor-color', sensor.color);
-          sphere.style.width = `${radiusPx * 2}px`;
-          sphere.style.height = `${radiusPx * 2}px`;
-          sphere.style.left = `${projected.x - radiusPx}px`;
-          sphere.style.top = `${projected.y - radiusPx}px`;
-          sphere.style.opacity = String(clamp(0.18 + (target.confidence || 0) * 0.62, 0.18, 0.82));
-          sphere.style.zIndex = String(Math.max(1, Math.round(10000 - projected.depth * 10)));
-          sphere.title = `${target.name || target.id} · ${Math.round(spatial.distance)}m · uncertainty ±${Math.round(spatial.uncertainty)}m`;
-          this.targetLayer.appendChild(sphere);
+          const key = `${sensor.id}:${target.id}`;
+          const node = this.ensureNode(key, sensor);
+          node.seen = true;
+          const confidence = clamp(Number(target.confidence) || 0, 0, 1);
+          const ageMs = Math.max(0, Date.now() - (Number(target.lastReceivedAt) || Date.now()) + (Number(target.sampleAgeMs) || 0));
+          const freshness = clamp(1 - ageMs / 30000, 0.25, 1);
+          const opacity = clamp((0.22 + confidence * 0.68) * freshness, 0.12, 0.90);
 
-          if ((target.confidence || 0) >= 0.62) {
-            const dot = document.createElement('div');
-            dot.className = 'spatial-target-dot';
-            dot.style.setProperty('--sensor-color', sensor.color);
-            dot.style.left = `${projected.x - 4}px`;
-            dot.style.top = `${projected.y - 4}px`;
-            dot.style.zIndex = String(Math.max(2, Math.round(10001 - projected.depth * 10)));
-            this.targetLayer.appendChild(dot);
-          }
+          node.cloud.style.width = `${radiusX * 2}px`;
+          node.cloud.style.height = `${radiusY * 2}px`;
+          node.cloud.style.transform = `translate3d(${projected.x - radiusX}px,${projected.y - radiusY}px,0)`;
+          node.cloud.style.opacity = String(opacity);
+          node.cloud.style.zIndex = String(Math.max(1, Math.round(10000 - projected.depth * 10)));
+          node.cloud.style.display = 'block';
+          node.cloud.title = `${target.name || target.id} · ${Math.round(spatial.distance)}m · uncertainty ${Math.round(spatial.horizontalUncertainty)}m × ${Math.round(spatial.verticalUncertainty)}m`;
+          node.dot.style.display = confidence >= 0.62 ? 'block' : 'none';
         });
+      });
+
+      this.nodes.forEach((node, key) => {
+        if (!node.seen) {
+          node.cloud.remove();
+          this.nodes.delete(key);
+        }
       });
     }
   }
