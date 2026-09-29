@@ -7,8 +7,8 @@
     return `${layer && layer.id || ''} ${layer && layer['source-layer'] || ''}`.toLowerCase();
   }
 
-  function featureKind(feature) {
-    const key = layerKey(feature && feature.layer);
+  function featureKind(layer) {
+    const key = layerKey(layer);
     if (key.includes('rail')) return 'rail';
     if (key.includes('water')) return 'water';
     if (/(road|street|transport|highway|bridge|tunnel|path)/.test(key)) return 'road';
@@ -50,39 +50,54 @@
 
       if (typeof this.radar.syncReferenceOverlay === 'function') this.radar.syncReferenceOverlay();
 
-      let rendered;
-      try {
-        rendered = map.queryRenderedFeatures();
-      } catch (error) {
-        console.warn('AR map features unavailable', error);
-        return;
-      }
-
+      const style = map.getStyle && map.getStyle();
+      const layers = style && Array.isArray(style.layers) ? style.layers : [];
+      const zoom = typeof map.getZoom === 'function' ? map.getZoom() : 0;
       const next = [];
       const seen = new Set();
-      (Array.isArray(rendered) ? rendered : []).forEach((feature, featureIndex) => {
-        if (!feature || !feature.layer || feature.layer.type !== 'line') return;
-        const lines = geometryLines(feature.geometry);
-        lines.forEach((line, lineIndex) => {
-          if (!Array.isArray(line) || line.length < 2) return;
-          const id = `${feature.layer.id}:${feature.id == null ? featureIndex : feature.id}:${lineIndex}`;
-          if (seen.has(id)) return;
-          seen.add(id);
 
-          const points = line.map(coordinate => ({
-            latitude: Number(coordinate && coordinate[1]),
-            longitude: Number(coordinate && coordinate[0])
-          })).filter(point => Number.isFinite(point.latitude) && Number.isFinite(point.longitude));
-          if (points.length < 2) return;
+      layers.forEach(layer => {
+        if (!layer || layer.type !== 'line' || !layer.source) return;
+        if (typeof map.getLayoutProperty === 'function' && map.getLayoutProperty(layer.id, 'visibility') === 'none') return;
+        if (Number.isFinite(Number(layer.minzoom)) && zoom < Number(layer.minzoom)) return;
+        if (Number.isFinite(Number(layer.maxzoom)) && zoom >= Number(layer.maxzoom)) return;
 
-          next.push({
-            id,
-            kind: featureKind(feature),
-            name: feature.properties && (feature.properties.name || feature.properties.ref) || '',
-            points
+        const options = {};
+        if (layer['source-layer']) options.sourceLayer = layer['source-layer'];
+        if (layer.filter) options.filter = layer.filter;
+
+        let sourceFeatures;
+        try {
+          sourceFeatures = map.querySourceFeatures(layer.source, options);
+        } catch (error) {
+          return;
+        }
+
+        (Array.isArray(sourceFeatures) ? sourceFeatures : []).forEach((feature, featureIndex) => {
+          const lines = geometryLines(feature && feature.geometry);
+          lines.forEach((line, lineIndex) => {
+            if (!Array.isArray(line) || line.length < 2) return;
+            const featureId = feature && feature.id != null ? feature.id : featureIndex;
+            const id = `${layer.source}:${layer['source-layer'] || ''}:${featureId}:${lineIndex}`;
+            if (seen.has(id)) return;
+            seen.add(id);
+
+            const points = line.map(coordinate => ({
+              latitude: Number(coordinate && coordinate[1]),
+              longitude: Number(coordinate && coordinate[0])
+            })).filter(point => Number.isFinite(point.latitude) && Number.isFinite(point.longitude));
+            if (points.length < 2) return;
+
+            next.push({
+              id,
+              kind: featureKind(layer),
+              name: feature && feature.properties && (feature.properties.name || feature.properties.ref) || '',
+              points
+            });
           });
         });
       });
+
       this.features = next;
     }
   }
