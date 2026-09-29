@@ -71,11 +71,20 @@
       };
     }
 
+    mapWorldScale(projection) {
+      if (!this.radar || typeof this.radar.metersPerPixel !== 'function') return 1;
+      const metersPerPixel = Number(this.radar.metersPerPixel());
+      const rangeMeters = Math.max(0.001, Number(this.rangeMeters || this.radar.rangeMeters) || 20);
+      if (!Number.isFinite(metersPerPixel) || metersPerPixel <= 0) return 1;
+      return projection.focalX * metersPerPixel / rangeMeters;
+    }
+
     alignMapPlane(projection) {
       if (!this.mapPlane || !this.hybridHorizon) return;
       const elevation = this.cameraElevationDegrees();
       const tilt = clamp(78 + elevation, 8, 89);
-      this.mapPlane.style.transform = `translate3d(0,${this.hybridHorizon.offset}px,0) rotate(${this.hybridHorizon.angle}deg) perspective(${Math.max(480, projection.focalY * 1.6)}px) rotateX(${tilt}deg) scale(1.45)`;
+      const scale = this.mapWorldScale(projection);
+      this.mapPlane.style.transform = `translate3d(0,${this.hybridHorizon.offset}px,0) rotate(${this.hybridHorizon.angle}deg) perspective(${Math.max(480, projection.focalY * 1.6)}px) rotateX(${tilt}deg) scale(${scale})`;
     }
 
     renderHorizon() {
