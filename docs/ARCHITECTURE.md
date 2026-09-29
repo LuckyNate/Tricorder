@@ -120,9 +120,15 @@ The app checks the GitHub `latest` release metadata for a higher `versionCode`, 
 
 Update checks occur when the app resumes, with a short throttle to avoid redundant requests.
 
-## 3D / AR
+## 3D / AR development priority
 
-The 3D view shares the same target truth as the 2D radar. Future camera/AR work should project the existing target estimates into the camera view rather than maintain a separate world model.
+The current goal is to make the 3D/AR mode the authoritative spatial presentation and bring it to a finished state before changing the 2D map.
+
+3D should use the phone/camera as the observer origin, render the live rear-camera feed as the background, maintain world-space targets while the phone moves and rotates, and display full 3D uncertainty volumes at approximately 30 FPS. Localization quality is monotonic: new evidence may preserve or improve a target solution, but a worse sample must not enlarge or degrade an already-established best-known solution.
+
+The 2D map is intentionally left unchanged while 3D is being perfected.
+
+After the 3D world model and AR presentation are stable, the 2D map will be reworked as a literal top-down minimap projection of that same 3D target state. It should not maintain an independent localization model. The two modes will ultimately share the same target positions, uncertainty volumes, confidence/staleness state, observer origin, and sensor colors; only the projection differs.
 
 ## Extension rule
 
