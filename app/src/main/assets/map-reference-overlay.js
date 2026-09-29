@@ -3,6 +3,8 @@
 
   const BaseRadarView = window.ScannerCore.RadarView;
   const REFERENCE_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
+  const TERRAIN_SOURCE_ID = 'tricorder-terrain';
+  const TERRAIN_SOURCE_URL = 'https://tiles.mapterhorn.com/tilejson.json';
 
   function layerKey(layer) {
     return `${layer.id || ''} ${layer['source-layer'] || ''}`.toLowerCase();
@@ -74,6 +76,15 @@
             try { this.referenceOverlayMap.setPaintProperty(layer.id, 'text-halo-width', 1.5); } catch (_) {}
           }
         });
+
+        if (!this.referenceOverlayMap.getSource(TERRAIN_SOURCE_ID)) {
+          this.referenceOverlayMap.addSource(TERRAIN_SOURCE_ID, {
+            type: 'raster-dem',
+            url: TERRAIN_SOURCE_URL,
+            tileSize: 256
+          });
+        }
+        this.referenceOverlayMap.setTerrain({ source: TERRAIN_SOURCE_ID, exaggeration: 1 });
 
         this.referenceOverlayReady = true;
         overlay.style.opacity = '1';
