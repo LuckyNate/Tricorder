@@ -51,7 +51,8 @@
           if (!target.position) return;
           const point = this.projectTarget(target);
           if (!point) return;
-          const radiusPx = Math.max(5, Math.min(140, (target.uncertaintyMeters || 5) / this.metersPerPixel()));
+          const uncertaintyMeters = Math.max(0, Number(target.uncertaintyMeters) || 0);
+          const radiusPx = uncertaintyMeters / this.metersPerPixel();
           const cloud = document.createElement('div');
           cloud.className = 'target-cloud';
           cloud.style.setProperty('--sensor-color', sensor.color);
