@@ -23,6 +23,8 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.view.Surface
+import android.webkit.PermissionRequest
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -149,6 +151,19 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
                     handler.postDelayed(stateSnapshotLoop, STATE_SNAPSHOT_INTERVAL_MS)
                 }
             }
+            webChromeClient = object : WebChromeClient() {
+                override fun onPermissionRequest(request: PermissionRequest?) {
+                    val pending = request ?: return
+                    val wantsVideo = pending.resources.contains(PermissionRequest.RESOURCE_VIDEO_CAPTURE)
+                    runOnUiThread {
+                        if (wantsVideo && checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                            pending.grant(arrayOf(PermissionRequest.RESOURCE_VIDEO_CAPTURE))
+                        } else {
+                            pending.deny()
+                        }
+                    }
+                }
+            }
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.allowFileAccess = true
@@ -195,6 +210,9 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         }
         if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
             needed += Manifest.permission.BLUETOOTH_CONNECT
+        }
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            needed += Manifest.permission.CAMERA
         }
 
         if (needed.isNotEmpty()) {
