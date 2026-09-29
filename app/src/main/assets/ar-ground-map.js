@@ -3,72 +3,87 @@
 
   const { WorldVector3 } = window.WorldSpace;
 
-  function distanceMeters(a, b) {
-    if (!a || !b) return Infinity;
-    const latMeters = (Number(b.latitude) - Number(a.latitude)) * 111320;
-    const meanLat = (Number(a.latitude) + Number(b.latitude)) * 0.5 * Math.PI / 180;
-    const lonMeters = (Number(b.longitude) - Number(a.longitude)) * 111320 * Math.cos(meanLat);
-    return Math.hypot(latMeters, lonMeters);
+  function layerKey(layer) {
+    return `${layer && layer.id || ''} ${layer && layer['source-layer'] || ''}`.toLowerCase();
+  }
+
+  function featureKind(feature) {
+    const key = layerKey(feature && feature.layer);
+    if (key.includes('rail')) return 'rail';
+    if (key.includes('water')) return 'water';
+    if (/(road|street|transport|highway|bridge|tunnel|path)/.test(key)) return 'road';
+    return 'map';
+  }
+
+  function geometryLines(geometry) {
+    if (!geometry || !Array.isArray(geometry.coordinates)) return [];
+    switch (geometry.type) {
+      case 'LineString':
+        return [geometry.coordinates];
+      case 'MultiLineString':
+        return geometry.coordinates;
+      case 'Polygon':
+        return geometry.coordinates;
+      case 'MultiPolygon':
+        return geometry.coordinates.flat();
+      default:
+        return [];
+    }
   }
 
   class MapGeometryProvider {
-    constructor() {
+    constructor(radar) {
+      this.radar = radar;
       this.features = [];
-      this.lastCenter = null;
-      this.lastRadius = 0;
-      this.loading = false;
-      this.lastFetchAt = 0;
-      this.abortController = null;
+      this.lastReadAt = 0;
     }
 
-    shouldRefresh(center, radiusMeters) {
-      if (!center || !Number.isFinite(Number(center.latitude)) || !Number.isFinite(Number(center.longitude))) return false;
-      if (!this.lastCenter) return true;
-      if (Math.abs(Number(radiusMeters) - this.lastRadius) >= 20) return true;
-      return distanceMeters(this.lastCenter, center) >= Math.max(15, Math.min(60, Number(radiusMeters) * 0.25));
-    }
-
-    async refresh(center, radiusMeters) {
-      const radius = Math.max(30, Math.min(800, Number(radiusMeters) || 100));
-      if (!this.shouldRefresh(center, radius) || this.loading) return;
-      if (Date.now() - this.lastFetchAt < 2500) return;
-
-      this.loading = true;
-      this.lastFetchAt = Date.now();
-      if (this.abortController) this.abortController.abort();
-      this.abortController = new AbortController();
-
-      const lat = Number(center.latitude);
-      const lon = Number(center.longitude);
-      const query = `[out:json][timeout:12];(way(around:${Math.ceil(radius)},${lat},${lon})[highway];way(around:${Math.ceil(radius)},${lat},${lon})[building];way(around:${Math.ceil(radius)},${lat},${lon})[railway];way(around:${Math.ceil(radius)},${lat},${lon})[waterway];);out geom;`;
-      try {
-        const response = await fetch('https://overpass-api.de/api/interpreter', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
-          body: `data=${encodeURIComponent(query)}`,
-          signal: this.abortController.signal
-        });
-        if (!response.ok) throw new Error(`map geometry HTTP ${response.status}`);
-        const payload = await response.json();
-        this.features = (Array.isArray(payload.elements) ? payload.elements : [])
-          .filter(element => element && element.type === 'way' && Array.isArray(element.geometry) && element.geometry.length >= 2)
-          .map(element => ({
-            id: String(element.id),
-            kind: element.tags && element.tags.highway ? 'road'
-              : element.tags && element.tags.building ? 'building'
-                : element.tags && element.tags.railway ? 'rail'
-                  : element.tags && element.tags.waterway ? 'water'
-                    : 'map',
-            name: element.tags && (element.tags.name || element.tags.ref) || '',
-            points: element.geometry.map(point => ({ latitude: Number(point.lat), longitude: Number(point.lon) }))
-          }));
-        this.lastCenter = { latitude: lat, longitude: lon };
-        this.lastRadius = radius;
-      } catch (error) {
-        if (error && error.name !== 'AbortError') console.warn('AR map geometry unavailable', error);
-      } finally {
-        this.loading = false;
+    refresh() {
+      const map = this.radar && this.radar.referenceOverlayMap;
+      if (!map || !this.radar.referenceOverlayReady) {
+        this.features = [];
+        return;
       }
+
+      if (Date.now() - this.lastReadAt < 250) return;
+      this.lastReadAt = Date.now();
+
+      if (typeof this.radar.syncReferenceOverlay === 'function') this.radar.syncReferenceOverlay();
+
+      let rendered;
+      try {
+        rendered = map.queryRenderedFeatures();
+      } catch (error) {
+        console.warn('AR map features unavailable', error);
+        return;
+      }
+
+      const next = [];
+      const seen = new Set();
+      (Array.isArray(rendered) ? rendered : []).forEach((feature, featureIndex) => {
+        if (!feature || !feature.layer || feature.layer.type !== 'line') return;
+        const lines = geometryLines(feature.geometry);
+        lines.forEach((line, lineIndex) => {
+          if (!Array.isArray(line) || line.length < 2) return;
+          const id = `${feature.layer.id}:${feature.id == null ? featureIndex : feature.id}:${lineIndex}`;
+          if (seen.has(id)) return;
+          seen.add(id);
+
+          const points = line.map(coordinate => ({
+            latitude: Number(coordinate && coordinate[1]),
+            longitude: Number(coordinate && coordinate[0])
+          })).filter(point => Number.isFinite(point.latitude) && Number.isFinite(point.longitude));
+          if (points.length < 2) return;
+
+          next.push({
+            id,
+            kind: featureKind(feature),
+            name: feature.properties && (feature.properties.name || feature.properties.ref) || '',
+            points
+          });
+        });
+      });
+      this.features = next;
     }
   }
 
@@ -97,10 +112,10 @@
   }
 
   class ARGroundMapLayer {
-    constructor(scene, world) {
+    constructor(scene, world, radar) {
       this.scene = scene;
       this.world = world;
-      this.provider = new MapGeometryProvider();
+      this.provider = new MapGeometryProvider(radar);
       this.ground = new GroundMapProjection(world);
       this.svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
       this.svg.classList.add('ar-ground-map');
@@ -132,8 +147,7 @@
         return;
       }
 
-      const fetchRadius = Math.max(60, Math.min(800, this.world.rangeMeters * 1.35));
-      this.provider.refresh({ latitude: pose.latitude, longitude: pose.longitude }, fetchRadius);
+      this.provider.refresh();
 
       this.svg.setAttribute('viewBox', `0 0 ${projection.width} ${projection.height}`);
       this.svg.setAttribute('width', String(projection.width));
@@ -181,7 +195,7 @@
       constructor(radar) {
         super(radar);
         this.groundMap = this.scene && radar && radar.world
-          ? new ARGroundMapLayer(this.scene, radar.world)
+          ? new ARGroundMapLayer(this.scene, radar.world, radar)
           : null;
       }
 
