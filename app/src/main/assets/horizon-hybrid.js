@@ -17,7 +17,7 @@
     constructor(...args) {
       super(...args);
       this.hybridHorizon = null;
-      this.mapPlane = document.getElementById('mapPlane');
+      this.mapPlane = document.getElementById('map');
     }
 
     gravityHorizon(projection) {
@@ -75,8 +75,7 @@
       if (!this.mapPlane || !this.hybridHorizon) return;
       const elevation = this.cameraElevationDegrees();
       const tilt = clamp(78 + elevation, 8, 89);
-      const scale = 1.45;
-      this.mapPlane.style.transform = `translate3d(0,${this.hybridHorizon.offset}px,0) rotate(${this.hybridHorizon.angle}deg) perspective(${Math.max(480, projection.focalY * 1.6)}px) rotateX(${tilt}deg) scale(${scale})`;
+      this.mapPlane.style.transform = `translate3d(0,${this.hybridHorizon.offset}px,0) rotate(${this.hybridHorizon.angle}deg) perspective(${Math.max(480, projection.focalY * 1.6)}px) rotateX(${tilt}deg) scale(1.45)`;
     }
 
     renderHorizon() {
