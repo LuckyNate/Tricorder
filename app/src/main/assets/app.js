@@ -15,7 +15,7 @@
     const { LocationSensor, HeadingSensor, WifiSensor, BluetoothSensor, NetworkSensor } = window.ScannerSensors;
     const { CellularSensor, applyWifiRtt, enrichBluetooth } = window.RadioSensors;
 
-    const ranges = [20, 50, 100, 500, 1000];
+    const ranges = [10, 20, 50, 100, 500, 1000];
     const controlStatus = document.getElementById('controlStatus');
     let rangeButton = document.getElementById('range');
     if (!rangeButton && controlStatus) {
@@ -33,7 +33,7 @@
     const mapRotator = document.getElementById('mapRotator');
     const threeDView = document.getElementById('threeDView');
 
-    let rangeIndex = 0;
+    let rangeIndex = 1;
     function syncRangeButton() {
       rangeButton.textContent = `Range: ${ranges[rangeIndex]} Meters`;
     }
