@@ -331,7 +331,7 @@ class RangedRadioSensor extends Sensor {
 
 class WifiSensor extends RangedRadioSensor {
   constructor() {
-    super({ id: 'wifi', label: 'WI-FI', color: '#39D353', rssiAtOneMeter: -45, pathLossExponent: 2.6, maxRange: 150 });
+    super({ id: 'wifi', label: 'WI-FI', color: '#68B878', rssiAtOneMeter: -45, pathLossExponent: 2.6, maxRange: 150 });
   }
 
   ingest(rows) {
