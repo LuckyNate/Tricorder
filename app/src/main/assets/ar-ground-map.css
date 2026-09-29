@@ -5,7 +5,7 @@
   height:100%;
   overflow:hidden;
   pointer-events:none;
-  z-index:10;
+  z-index:2147483647;
   background:transparent;
 }
 
