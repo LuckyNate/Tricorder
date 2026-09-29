@@ -339,12 +339,16 @@ class ScannerEngine {
     requestAnimationFrame(this.frame);
   }
 
+  isFixedSensor(sensor) {
+    return sensor && (sensor.id === 'network' || sensor.id === 'location' || sensor.id === 'cellular');
+  }
+
   refreshControls() {
     if (!this.controlsEl) return;
     this.controlsEl.replaceChildren();
     this.sensors.forEach(sensor => {
       if (sensor.id === 'heading') return;
-      const fixed = sensor.id === 'network' || sensor.id === 'location' || sensor.id === 'cellular';
+      const fixed = this.isFixedSensor(sensor);
       const control = document.createElement(fixed ? 'div' : 'button');
       if (!fixed) control.type = 'button';
       control.className = fixed ? 'sensor-key sensor-fixed' : `sensor-key${sensor.enabled ? '' : ' sensor-off'}`;
@@ -366,7 +370,7 @@ class ScannerEngine {
     this.sensors.forEach(sensor => {
       if (!sensor.showList) return;
       const section = document.createElement('section');
-      section.className = 'device-section';
+      section.className = `device-section${this.isFixedSensor(sensor) ? ' sensor-fixed' : ''}`;
       section.style.setProperty('--sensor-color', sensor.color);
       const title = document.createElement('div');
       title.className = 'device-section-title';
