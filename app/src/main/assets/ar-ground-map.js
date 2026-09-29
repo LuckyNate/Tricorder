@@ -174,4 +174,24 @@
   }
 
   window.ARGroundMap = { MapGeometryProvider, GroundMapProjection, ARGroundMapLayer };
+
+  if (window.SpatialView) {
+    const BaseSpatialView = window.SpatialView;
+    class GroundMappedSpatialView extends BaseSpatialView {
+      constructor(radar) {
+        super(radar);
+        this.groundMap = this.scene && radar && radar.world
+          ? new ARGroundMapLayer(this.scene, radar.world)
+          : null;
+      }
+
+      render(engine, now = performance.now()) {
+        if (this.active && this.groundMap && this.scene && !this.root.hidden) {
+          this.groundMap.render(this.effectiveProjection());
+        }
+        super.render(engine, now);
+      }
+    }
+    window.SpatialView = GroundMappedSpatialView;
+  }
 })();
