@@ -33,7 +33,7 @@
     const mapRotator = document.getElementById('mapRotator');
     const threeDView = document.getElementById('threeDView');
 
-    let rangeIndex = 1;
+    let rangeIndex = 0;
     function syncRangeButton() {
       rangeButton.textContent = `Range: ${ranges[rangeIndex]} Meters`;
     }
