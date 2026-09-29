@@ -312,9 +312,7 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         if (!SensorManager.remapCoordinateSystem(rawRotation, axisX, axisY, screenRotation)) return
         SensorManager.getOrientation(screenRotation, orientation)
 
-        var heading = orientation[0] * 180f / PI.toFloat()
-        if (heading < 0f) heading += 360f
-        heading = magneticToTrueHeading(heading)
+        val heading = worldLookHeading(rawRotation, screenRotation)
         val pitch = orientation[1] * 180f / PI.toFloat()
         val roll = orientation[2] * 180f / PI.toFloat()
 
@@ -323,6 +321,30 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         latestRollDegrees = roll
         headingSource = "orientation"
         recordHeadingSample(event.timestamp, heading, pitch, roll, headingAccuracy, headingSource)
+    }
+
+    private fun worldLookHeading(rawRotation: FloatArray, screenRotation: FloatArray): Float {
+        // Rotation matrices transform device axes into Android's world frame:
+        // +X east, +Y magnetic north, +Z sky. The rear camera looks along device -Z.
+        val cameraEast = -rawRotation[2]
+        val cameraNorth = -rawRotation[5]
+        val cameraHorizontal = Math.hypot(cameraEast.toDouble(), cameraNorth.toDouble()).toFloat()
+
+        // When the rear camera is aimed mostly vertically, its horizontal azimuth is unstable.
+        // In that case use the current screen-top (+Y) direction from the display-remapped matrix.
+        val east: Float
+        val north: Float
+        if (cameraHorizontal >= 0.35f) {
+            east = cameraEast
+            north = cameraNorth
+        } else {
+            east = screenRotation[1]
+            north = screenRotation[4]
+        }
+
+        var magneticHeading = Math.toDegrees(Math.atan2(east.toDouble(), north.toDouble())).toFloat()
+        if (magneticHeading < 0f) magneticHeading += 360f
+        return magneticToTrueHeading(magneticHeading)
     }
 
     private fun magneticToTrueHeading(magneticHeading: Float): Float {
