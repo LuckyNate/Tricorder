@@ -1,12 +1,39 @@
+#minimapViewport {
+  position:absolute;
+  inset:0;
+  overflow:hidden;
+  pointer-events:none;
+}
+
+#viewPane.mode-3d #minimapViewport {
+  left:10px;
+  right:auto;
+  top:auto;
+  bottom:10px;
+  width:min(34%,180px);
+  aspect-ratio:1 / 1;
+  z-index:260;
+  border:1px solid #5ba983;
+  border-radius:8px;
+  background:#07110ddd;
+  box-shadow:0 0 14px #0009;
+}
+
 #viewPane.mode-3d #mapRotator {
-  opacity:0 !important;
+  position:absolute;
+  inset:-9%;
+  opacity:1 !important;
   pointer-events:none !important;
   transform-style:flat !important;
 }
 
 #viewPane.mode-3d #map {
-  opacity:0 !important;
-  transform:none !important;
+  opacity:1 !important;
+}
+
+#viewPane.mode-3d .target-layer,
+#viewPane.mode-3d .ping-layer {
+  display:block;
 }
 
 #viewPane.mode-3d #phoneReticle {
