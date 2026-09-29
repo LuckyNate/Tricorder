@@ -17,6 +17,7 @@ import android.webkit.WebView
 class TricorderApplication : Application(), Application.ActivityLifecycleCallbacks {
     private var activeActivity: Activity? = null
     private var bridge: DeviceSensorBridge? = null
+    private var wifiPeerScanner: WifiPeerScanner? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -43,12 +44,19 @@ class TricorderApplication : Application(), Application.ActivityLifecycleCallbac
             { payload -> evaluate(webView, "window.Tricorder&&window.Tricorder.onGnssFrame&&window.Tricorder.onGnssFrame($payload);") },
             { payload -> evaluate(webView, "window.Tricorder&&window.Tricorder.onNfcTag&&window.Tricorder.onNfcTag($payload);") }
         ).also { it.start() }
+
+        wifiPeerScanner?.stop()
+        wifiPeerScanner = WifiPeerScanner(activity) { payload ->
+            evaluate(webView, "window.Tricorder&&window.Tricorder.onWifiPeerFrame&&window.Tricorder.onWifiPeerFrame($payload);")
+        }.also { it.start() }
     }
 
     override fun onActivityPaused(activity: Activity) {
         if (activity !== activeActivity) return
         bridge?.stop()
         bridge = null
+        wifiPeerScanner?.stop()
+        wifiPeerScanner = null
         activeActivity = null
     }
 
