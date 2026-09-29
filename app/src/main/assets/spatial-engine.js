@@ -4,11 +4,10 @@
   }
 
   const BaseRadarView = window.ScannerCore.RadarView;
-  const { WorldSpaceModel, WorldVector3, clamp, wrapDegrees } = window.WorldSpace;
+  const { WorldSpaceModel, WorldVector3, wrapDegrees } = window.WorldSpace;
   const DEG = Math.PI / 180;
   const FRAME_INTERVAL_MS = 1000 / 30;
   const DEFAULT_HORIZONTAL_FOV_DEGREES = 70;
-  const DEFAULT_CAMERA_HEIGHT_METERS = 1.55;
 
   function featureKey(layer) {
     return `${layer && layer.id || ''} ${layer && layer['source-layer'] || ''}`.toLowerCase();
@@ -40,10 +39,9 @@
       this.world.setRange(this.rangeMeters);
     }
 
-    setLocation(latitude, longitude, accuracy) {
+    setLocation(latitude, longitude, accuracy, altitude, verticalAccuracy) {
       super.setLocation(latitude, longitude, accuracy);
-      const location = this.location || {};
-      this.world.setLocation(latitude, longitude, accuracy, location.altitude, location.verticalAccuracy);
+      this.world.setLocation(latitude, longitude, accuracy, altitude, verticalAccuracy);
     }
 
     setHeading(degrees) {
@@ -60,63 +58,13 @@
       super.setRange(meters);
     }
 
-    projectTarget(target) {
-      if (!this.location || !target || !this.mapEl) return null;
-      const width = this.mapEl.clientWidth || 320;
-      const height = this.mapEl.clientHeight || 320;
-      return this.world.projectTopDown(target, this.metersPerPixel(), width, height);
+    render() {
+      if (this.targetLayer) this.targetLayer.replaceChildren();
+      if (this.pingLayer) this.pingLayer.replaceChildren();
     }
 
-    render(engine) {
-      if (!this.targetLayer) return;
-      this.targetLayer.replaceChildren();
-      engine.sensors.forEach(sensor => {
-        if (!sensor.enabled) return;
-        sensor.targets.forEach(target => {
-          if (!target.position) return;
-          const point = this.projectTarget(target);
-          if (!point) return;
-          const radiusPx = Math.max(0, Number(target.uncertaintyMeters) || 0) / this.metersPerPixel();
-          const cloud = document.createElement('div');
-          cloud.className = 'target-cloud';
-          cloud.style.setProperty('--sensor-color', sensor.color);
-          cloud.style.width = `${radiusPx * 2}px`;
-          cloud.style.height = `${radiusPx * 2}px`;
-          cloud.style.left = `${point.x - radiusPx}px`;
-          cloud.style.top = `${point.y - radiusPx}px`;
-          cloud.style.opacity = String(clamp(0.2 + (Number(target.confidence) || 0) * 0.62, 0.16, 0.82));
-          this.targetLayer.appendChild(cloud);
-
-          if ((Number(target.confidence) || 0) >= 0.62) {
-            const dot = document.createElement('div');
-            dot.className = 'target-dot';
-            dot.style.setProperty('--sensor-color', sensor.color);
-            dot.style.left = `${point.x - 4}px`;
-            dot.style.top = `${point.y - 4}px`;
-            this.targetLayer.appendChild(dot);
-          }
-        });
-      });
-    }
-
-    ping(target) {
-      if (!target || !target.position || !this.pingLayer) return false;
-      const point = this.projectTarget(target);
-      if (!point) return false;
-      const ripple = document.createElement('div');
-      ripple.className = 'target-ripple';
-      ripple.style.setProperty('--sensor-color', target.sensor.color);
-      ripple.style.left = `${point.x}px`;
-      ripple.style.top = `${point.y}px`;
-      for (let index = 0; index < 3; index += 1) {
-        const ring = document.createElement('span');
-        ring.className = 'target-ripple-ring';
-        ring.style.animationDelay = `${index * 300}ms`;
-        ripple.appendChild(ring);
-      }
-      this.pingLayer.appendChild(ripple);
-      window.setTimeout(() => ripple.remove(), 3000);
-      return true;
+    ping() {
+      return false;
     }
   }
 
@@ -127,17 +75,25 @@
       this.lastRefreshAt = 0;
     }
 
+    map() {
+      return this.radar && this.radar.referenceOverlayMap;
+    }
+
     refresh(force = false) {
-      const map = this.radar && this.radar.referenceOverlayMap;
+      const map = this.map();
       if (!map || !this.radar.referenceOverlayReady) {
         this.features = [];
         return;
       }
+
       const now = Date.now();
       if (!force && now - this.lastRefreshAt < 250) return;
       this.lastRefreshAt = now;
 
-      if (typeof this.radar.syncReferenceOverlay === 'function') this.radar.syncReferenceOverlay();
+      if (typeof this.radar.syncReferenceOverlay === 'function') {
+        this.radar.syncReferenceOverlay();
+      }
+
       const style = map.getStyle && map.getStyle();
       const layers = style && Array.isArray(style.layers) ? style.layers : [];
       const zoom = typeof map.getZoom === 'function' ? map.getZoom() : 0;
@@ -164,14 +120,28 @@
         sourceFeatures.forEach((feature, featureIndex) => {
           geometryLines(feature && feature.geometry).forEach((line, lineIndex) => {
             if (!Array.isArray(line) || line.length < 2) return;
-            const id = `${layer.source}:${layer['source-layer'] || ''}:${feature && feature.id != null ? feature.id : featureIndex}:${lineIndex}`;
-            if (seen.has(id)) return;
-            seen.add(id);
+
             const points = line.map(coordinate => ({
               longitude: Number(coordinate && coordinate[0]),
               latitude: Number(coordinate && coordinate[1])
             })).filter(point => Number.isFinite(point.longitude) && Number.isFinite(point.latitude));
             if (points.length < 2) return;
+
+            const first = points[0];
+            const last = points[points.length - 1];
+            const id = [
+              layer.source,
+              layer['source-layer'] || '',
+              feature && feature.id != null ? feature.id : featureIndex,
+              lineIndex,
+              first.longitude.toFixed(6),
+              first.latitude.toFixed(6),
+              last.longitude.toFixed(6),
+              last.latitude.toFixed(6)
+            ].join(':');
+            if (seen.has(id)) return;
+            seen.add(id);
+
             next.push({
               id,
               kind: featureKind(layer),
@@ -183,6 +153,17 @@
       });
 
       this.features = next;
+    }
+
+    elevationAt(position) {
+      const map = this.map();
+      if (!map || !this.radar.referenceOverlayReady || typeof map.queryTerrainElevation !== 'function') return null;
+      try {
+        const elevation = map.queryTerrainElevation([position.longitude, position.latitude]);
+        return Number.isFinite(Number(elevation)) ? Number(elevation) : null;
+      } catch (_) {
+        return null;
+      }
     }
   }
 
@@ -200,12 +181,8 @@
       this.cameraStream = null;
       this.cameraStarting = false;
       this.cameraHorizontalFov = DEFAULT_HORIZONTAL_FOV_DEGREES;
-      this.cameraHeightMeters = DEFAULT_CAMERA_HEIGHT_METERS;
       this.lastRenderAt = 0;
-      this.nodes = new Map();
       this.mapSource = new MapGeometrySource(radar);
-      this.gravityVector = null;
-      this.gravityDisplayRotation = 0;
       this.initScene();
     }
 
@@ -216,13 +193,6 @@
       this.groundSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
       this.groundSvg.classList.add('ar-ground-map');
       this.groundSvg.setAttribute('aria-hidden', 'true');
-
-      this.horizon = document.createElement('div');
-      this.horizon.className = 'spatial-horizon';
-      this.horizon.setAttribute('aria-hidden', 'true');
-
-      this.targetLayer = document.createElement('div');
-      this.targetLayer.id = 'spatialTargets';
 
       const reticle = document.createElement('div');
       reticle.className = 'spatial-reticle';
@@ -248,7 +218,7 @@
       cameraReadout.textContent = 'CAM OFF';
       this.cameraLabel = cameraReadout;
 
-      this.scene.append(this.groundSvg, this.horizon, this.targetLayer, reticle, headingReadout, pitchReadout, rangeReadout, cameraReadout);
+      this.scene.append(this.groundSvg, reticle, headingReadout, pitchReadout, rangeReadout, cameraReadout);
     }
 
     setActive(active) {
@@ -308,10 +278,8 @@
       this.pose = this.world.pose;
     }
 
-    setGravityVector(vector, displayRotation = 0) {
-      if (!Array.isArray(vector) || vector.length !== 3 || !vector.every(value => Number.isFinite(Number(value)))) return;
-      this.gravityVector = vector.map(Number);
-      this.gravityDisplayRotation = Number(displayRotation) || 0;
+    setGravityVector() {
+      // Mapping rebuild uses the Android rotation matrix directly.
     }
 
     setRange(meters) {
@@ -345,12 +313,15 @@
     }
 
     groundVector(position) {
+      if (!Number.isFinite(Number(this.world.pose.altitude))) return null;
       const horizontal = this.world.horizontalOffset(position);
-      if (!horizontal) return null;
+      const groundAltitude = this.mapSource.elevationAt(position);
+      if (!horizontal || !Number.isFinite(Number(groundAltitude))) return null;
+
       return new WorldVector3({
         east: horizontal.east,
         north: horizontal.north,
-        up: -this.cameraHeightMeters,
+        up: Number(groundAltitude) - Number(this.world.pose.altitude),
         horizontalUncertainty: 1,
         verticalUncertainty: 1
       });
@@ -358,7 +329,7 @@
 
     renderGroundMap(projection) {
       if (!this.groundSvg) return;
-      if (!this.world.pose.hasLocation()) {
+      if (!this.world.pose.hasLocation() || !Number.isFinite(Number(this.world.pose.altitude))) {
         this.groundSvg.replaceChildren();
         return;
       }
@@ -389,114 +360,23 @@
             flush();
             return;
           }
+
           const point = this.world.camera.project(vector, this.world.pose, projection);
-          if (!point || point.depth <= 0.05 || point.x < -projection.width || point.x > projection.width * 2 || point.y < -projection.height || point.y > projection.height * 2) {
+          if (!point ||
+              point.x < -projection.width || point.x > projection.width * 2 ||
+              point.y < -projection.height || point.y > projection.height * 2) {
             flush();
             return;
           }
+
           segment.push(point);
         });
         flush();
       });
     }
 
-    renderHorizon(projection) {
-      if (!this.horizon) return;
-      const pose = this.world.pose;
-      const basis = pose.orientation && pose.orientation.hasMatrix ? pose.orientation.cameraBasis() : null;
-      if (!basis) {
-        const elevation = this.world.camera.cameraElevationDegrees(pose) * DEG;
-        const roll = this.world.camera.cameraRollDegrees(pose);
-        this.horizon.style.display = 'block';
-        this.horizon.style.transform = `translate3d(0,${Math.tan(elevation) * projection.focalY}px,0) rotate(${roll}deg)`;
-        return;
-      }
-
-      const upRight = basis.right.up;
-      const upScreen = basis.up.up;
-      const upForward = basis.forward.up;
-      if (Math.abs(upScreen) < 0.001) {
-        this.horizon.style.display = 'none';
-        return;
-      }
-      const offset = projection.focalY * upForward / upScreen;
-      const angle = Math.atan(projection.focalY * upRight / (projection.focalX * upScreen)) / DEG;
-      this.horizon.style.display = 'block';
-      this.horizon.style.transform = `translate3d(0,${offset}px,0) rotate(${angle}deg)`;
-    }
-
-    ensureNode(key, sensor) {
-      let node = this.nodes.get(key);
-      if (node) return node;
-      const cloud = document.createElement('div');
-      cloud.className = 'spatial-target-cloud';
-      cloud.style.setProperty('--sensor-color', sensor.color);
-      const dot = document.createElement('div');
-      dot.className = 'spatial-target-dot';
-      dot.style.setProperty('--sensor-color', sensor.color);
-      cloud.appendChild(dot);
-      this.targetLayer.appendChild(cloud);
-      node = { cloud, dot, seen: false };
-      this.nodes.set(key, node);
-      return node;
-    }
-
-    renderTargets(engine, projection) {
-      this.nodes.forEach(node => { node.seen = false; });
-
-      engine.sensors.forEach(sensor => {
-        if (!sensor.enabled) return;
-        sensor.targets.forEach(target => {
-          if (!target.position) return;
-          const vector = this.world.resolveTarget(target);
-          if (!vector) return;
-          if (vector.distance - Math.max(vector.horizontalUncertainty, vector.verticalUncertainty) > this.rangeMeters) return;
-
-          const projected = this.world.camera.project(vector, this.world.pose, projection);
-          if (!projected) return;
-
-          const radiusX = clamp(
-            Math.atan2(vector.horizontalUncertainty, Math.max(0.5, projected.depth)) * projected.focalX,
-            8,
-            projected.width * 0.48
-          );
-          const radiusY = clamp(
-            Math.atan2(vector.verticalUncertainty, Math.max(0.5, projected.depth)) * projected.focalY,
-            8,
-            projected.height * 0.48
-          );
-
-          if (projected.x < -radiusX || projected.x > projected.width + radiusX || projected.y < -radiusY || projected.y > projected.height + radiusY) return;
-
-          const key = `${sensor.id}:${target.id}`;
-          const node = this.ensureNode(key, sensor);
-          node.seen = true;
-          const confidence = clamp(Number(target.confidence) || 0, 0, 1);
-          const ageMs = Math.max(0, Date.now() - (Number(target.lastReceivedAt) || Date.now()) + (Number(target.sampleAgeMs) || 0));
-          const freshness = clamp(1 - ageMs / 30000, 0.25, 1);
-          const opacity = clamp((0.22 + confidence * 0.68) * freshness, 0.12, 0.90);
-
-          node.cloud.style.width = `${radiusX * 2}px`;
-          node.cloud.style.height = `${radiusY * 2}px`;
-          node.cloud.style.transform = `translate3d(${projected.x - radiusX}px,${projected.y - radiusY}px,0)`;
-          node.cloud.style.opacity = String(opacity);
-          node.cloud.style.zIndex = String(Math.max(1, Math.round(10000 - projected.depth * 10)));
-          node.cloud.style.display = 'block';
-          node.cloud.title = `${target.name || target.id} · ${Math.round(vector.distance)}m · uncertainty ${Math.round(vector.horizontalUncertainty)}m × ${Math.round(vector.verticalUncertainty)}m`;
-          node.dot.style.display = confidence >= 0.62 ? 'block' : 'none';
-        });
-      });
-
-      this.nodes.forEach((node, key) => {
-        if (!node.seen) {
-          node.cloud.remove();
-          this.nodes.delete(key);
-        }
-      });
-    }
-
-    render(engine, now = performance.now()) {
-      if (!this.active || !this.root || this.root.hidden || !this.scene || !this.targetLayer) return;
+    render(_engine, now = performance.now()) {
+      if (!this.active || !this.root || this.root.hidden || !this.scene) return;
       if (now - this.lastRenderAt < FRAME_INTERVAL_MS) return;
       this.lastRenderAt = now;
       this.rangeMeters = this.world.rangeMeters;
@@ -510,8 +390,9 @@
       if (this.rangeLabel) this.rangeLabel.textContent = `${Math.round(this.rangeMeters)} m`;
 
       this.renderGroundMap(projection);
-      this.renderHorizon(projection);
-      this.renderTargets(engine, projection);
+
+      // Detection projection is intentionally disabled during the map-only rebuild.
+      // this.renderTargets(engine, projection);
     }
   }
 
