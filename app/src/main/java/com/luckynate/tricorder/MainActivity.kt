@@ -64,6 +64,7 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     private var latestPitchDegrees = 0f
     private var latestRollDegrees = 0f
     private var latestRotationMatrix: FloatArray? = null
+    private var latestGravityVector: FloatArray? = null
     private var latestDisplayRotation = Surface.ROTATION_0
     private var headingAccuracy = SensorManager.SENSOR_STATUS_UNRELIABLE
     private var headingSource = "none"
@@ -287,10 +288,19 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         if (rotationVector != null) {
             sensorManager.registerListener(this, rotationVector, SensorManager.SENSOR_DELAY_GAME)
         }
+        val gravity = sensorManager.getDefaultSensor(Sensor.TYPE_GRAVITY)
+        if (gravity != null) {
+            sensorManager.registerListener(this, gravity, SensorManager.SENSOR_DELAY_GAME)
+        }
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
-        if (event?.sensor?.type != Sensor.TYPE_ROTATION_VECTOR) return
+        if (event == null) return
+        if (event.sensor.type == Sensor.TYPE_GRAVITY) {
+            if (event.values.size >= 3) latestGravityVector = event.values.copyOf(3)
+            return
+        }
+        if (event.sensor.type != Sensor.TYPE_ROTATION_VECTOR) return
 
         val rawRotation = FloatArray(9)
         val screenRotation = FloatArray(9)
@@ -653,9 +663,10 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         val heading = latestHeadingDegrees ?: return
         val source = headingSource.replace("\\", "\\\\").replace("'", "\\'")
         val matrixPayload = latestRotationMatrix?.joinToString(prefix = "[", postfix = "]") ?: "null"
+        val gravityPayload = latestGravityVector?.joinToString(prefix = "[", postfix = "]") ?: "null"
         val declination = geomagneticDeclinationDegrees()
         val script = "window.Tricorder && window.Tricorder.onHeading($heading,$headingAccuracy,'$source',$latestPitchDegrees,$latestRollDegrees);" +
-            "window.Tricorder && window.Tricorder.onOrientationMatrix && window.Tricorder.onOrientationMatrix($matrixPayload,$latestDisplayRotation,$declination);"
+            "window.Tricorder && window.Tricorder.onOrientationMatrix && window.Tricorder.onOrientationMatrix($matrixPayload,$latestDisplayRotation,$declination,$gravityPayload);"
         runOnUiThread { webView.evaluateJavascript(script, null) }
     }
 
