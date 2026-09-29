@@ -8,6 +8,8 @@ If Tricorder can observe something useful, it should enter the world model even 
 
 Uncertainty is represented as spatial spread, transparency, confidence and layer priority. Missing precision is not a reason to hide a target.
 
+The current development priority is to perfect the 3D world model and AR presentation first. The existing 2D map remains unchanged until 3D is stable; afterward, 2D will become a top-down minimap projection of the same authoritative 3D target state rather than a separate localization model.
+
 ## Target state
 
 A target can carry:
@@ -46,6 +48,8 @@ Possible presentations include:
 
 The visual statement is always "the target is believed to be somewhere in this region," not "the phone is the target location."
 
+Localization is monotonic at the accepted target-state level. New evidence may preserve or improve the best-known spatial solution, but a worse candidate must not enlarge or degrade an already-established uncertainty solution. Noisy samples may remain in observation history without replacing the accepted best-known position/uncertainty state.
+
 ## Confidence presentation
 
 - Higher confidence -> higher opacity.
@@ -53,6 +57,16 @@ The visual statement is always "the target is believed to be somewhere in this r
 - Higher confidence -> higher render stack priority.
 - Lower confidence -> lower render stack priority.
 - Broader spatial spread communicates weaker positional certainty.
+
+## 3D authority and future 2D projection
+
+The authoritative spatial target state is being developed around the 3D/AR view first.
+
+The 3D presentation should render world-space targets and uncertainty volumes around the phone/camera observer while preserving the same accepted target state as observations improve it.
+
+The current 2D map must not be reworked during this phase.
+
+Once the 3D model is considered finished, the 2D map should be derived directly from it as a horizontal/top-down projection. At that point both views should consume identical target positions, uncertainty, confidence/staleness state, observer origin, and sensor identity/color; only the projection and presentation differ.
 
 ## Freshness
 
