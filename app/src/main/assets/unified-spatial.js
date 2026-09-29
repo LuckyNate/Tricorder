@@ -141,7 +141,8 @@
       const projection = this.effectiveProjection();
       const elevation = this.cameraElevationDegrees();
       const offset = Math.tan(elevation * Math.PI / 180) * projection.focalY;
-      this.horizon.style.transform = `translate3d(0,${offset}px,0) rotate(${Number(this.world.pose.roll || 0)}deg)`;
+      const roll = this.world.camera.cameraRollDegrees(this.world.pose);
+      this.horizon.style.transform = `translate3d(0,${offset}px,0) rotate(${roll}deg)`;
     }
 
     render(engine, now = performance.now()) {
@@ -150,7 +151,7 @@
       this.lastRenderAt = now;
       this.rangeMeters = this.world.rangeMeters;
 
-      if (this.headingLabel) this.headingLabel.textContent = `${Math.round(wrapDegrees(this.world.pose.heading || 0))}°`;
+      if (this.headingLabel) this.headingLabel.textContent = `${Math.round(this.world.mapHeadingDegrees())}°`;
       if (this.pitchLabel) {
         const elevation = this.cameraElevationDegrees();
         this.pitchLabel.textContent = `${elevation >= 0 ? '+' : ''}${Math.round(elevation)}°`;
