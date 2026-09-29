@@ -3,13 +3,12 @@ html, body { margin:0; width:100%; height:100%; overflow:hidden; background:#071
 button { font:inherit; }
 #app { width:100%; height:100%; display:flex; flex-direction:column; background:#07110d; }
 #viewPane { position:relative; flex:1 1 50%; min-height:40%; overflow:hidden; background:#06100c; border-bottom:1px solid #214c3c; }
-#mapPlane { position:absolute; inset:0; transform-origin:50% 50%; }
 #mapRotator { position:absolute; inset:-9%; transform-origin:50% 50%; }
 #map { width:100%; height:100%; background:#0a1712; }
-#viewPane.mode-3d #mapPlane { z-index:3; pointer-events:none; transform-style:preserve-3d; }
-#viewPane.mode-3d #map { opacity:.72; }
-#mapHorizonRing { display:none; position:absolute; left:50%; top:50%; width:170%; aspect-ratio:1; transform:translate(-50%,-50%); box-sizing:border-box; border:3px solid #0066ff; border-radius:50%; box-shadow:0 0 6px #0066ff,0 0 16px #0066ff,0 0 28px #0066ff; pointer-events:none; z-index:1000; }
-#viewPane.mode-3d #mapHorizonRing { display:block; }
+#viewPane.mode-3d #mapRotator { z-index:3; pointer-events:none; transform-style:preserve-3d; }
+#viewPane.mode-3d #map { transform-origin:50% 50%; opacity:.72; }
+#viewPane.mode-3d .target-layer,
+#viewPane.mode-3d .ping-layer { display:none; }
 .local-map { position:relative; overflow:hidden; background-color:#0a1712; background-image:linear-gradient(#16322655 1px,transparent 1px),linear-gradient(90deg,#16322655 1px,transparent 1px); background-size:32px 32px; }
 .tile-layer,.target-layer,.ping-layer { position:absolute; inset:0; overflow:hidden; }
 .map-tile { position:absolute; width:256px; height:256px; user-select:none; pointer-events:none; }
