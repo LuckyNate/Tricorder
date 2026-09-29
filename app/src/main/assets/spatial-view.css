@@ -4,23 +4,34 @@
   display:block;
   overflow:hidden;
   color:#9fffd0;
-  background:radial-gradient(circle at center,#10281f 0,#07110d 78%);
+  background:#020403;
+}
+
+#spatialCamera {
+  position:absolute;
+  inset:0;
+  width:100%;
+  height:100%;
+  object-fit:cover;
+  background:#020403;
+  z-index:0;
 }
 
 #spatialScene {
   position:absolute;
   inset:0;
   overflow:hidden;
+  z-index:1;
 }
 
 .spatial-grid {
   position:absolute;
   inset:0;
   pointer-events:none;
-  opacity:.24;
+  opacity:.10;
   background-image:
-    linear-gradient(#4f8f7250 1px,transparent 1px),
-    linear-gradient(90deg,#4f8f7250 1px,transparent 1px);
+    linear-gradient(#9fffd024 1px,transparent 1px),
+    linear-gradient(90deg,#9fffd024 1px,transparent 1px);
   background-size:48px 48px;
   mask-image:radial-gradient(circle at center,#000 0,#000 58%,transparent 92%);
 }
@@ -31,8 +42,8 @@
   top:50%;
   width:150%;
   height:1px;
-  background:#79cba4aa;
-  box-shadow:0 0 8px #79cba455;
+  background:#d8ffe977;
+  box-shadow:0 0 8px #9fffd055;
   transform-origin:50% 50%;
   pointer-events:none;
   will-change:transform;
@@ -80,29 +91,49 @@
   top:8px;
 }
 
-.spatial-target-sphere {
+.spatial-target-cloud {
   position:absolute;
+  left:0;
+  top:0;
   box-sizing:border-box;
-  border:1px solid var(--sensor-color);
+  border:1px solid color-mix(in srgb,var(--sensor-color) 88%,white 12%);
   border-radius:50%;
   background:radial-gradient(
-    circle at 35% 30%,
-    color-mix(in srgb,var(--sensor-color) 40%,transparent),
-    color-mix(in srgb,var(--sensor-color) 13%,transparent) 48%,
-    color-mix(in srgb,var(--sensor-color) 6%,transparent) 66%,
-    transparent 78%
+    ellipse at center,
+    color-mix(in srgb,var(--sensor-color) 22%,transparent) 0,
+    color-mix(in srgb,var(--sensor-color) 13%,transparent) 42%,
+    color-mix(in srgb,var(--sensor-color) 6%,transparent) 68%,
+    transparent 82%
   );
   box-shadow:
-    0 0 18px color-mix(in srgb,var(--sensor-color) 48%,transparent),
-    inset 0 0 18px color-mix(in srgb,var(--sensor-color) 28%,transparent);
-  transition:width .14s linear,height .14s linear,opacity .14s linear;
-  will-change:left,top,width,height;
+    0 0 18px color-mix(in srgb,var(--sensor-color) 42%,transparent),
+    inset 0 0 22px color-mix(in srgb,var(--sensor-color) 18%,transparent);
+  transform-origin:center center;
+  will-change:transform,width,height,opacity;
+  pointer-events:none;
+}
+
+.spatial-target-cloud::before,
+.spatial-target-cloud::after {
+  content:'';
+  position:absolute;
+  inset:12%;
+  border:1px solid color-mix(in srgb,var(--sensor-color) 35%,transparent);
+  border-radius:50%;
+}
+
+.spatial-target-cloud::after {
+  inset:28%;
+  opacity:.55;
 }
 
 .spatial-target-dot {
   position:absolute;
+  left:50%;
+  top:50%;
   width:8px;
   height:8px;
+  margin:-4px 0 0 -4px;
   border-radius:50%;
   background:var(--sensor-color);
   box-shadow:0 0 12px var(--sensor-color);
@@ -112,15 +143,17 @@
   position:absolute;
   z-index:320;
   padding:4px 6px;
-  border:1px solid #315f4b;
+  border:1px solid #315f4b99;
   border-radius:4px;
-  background:#07110dcc;
-  color:#a9e8c8;
+  background:#07110da6;
+  color:#d8ffe9;
   font-size:10px;
   letter-spacing:.08em;
   pointer-events:none;
+  text-shadow:0 1px 2px #000;
 }
 
 .spatial-readout-heading { left:8px; top:8px; }
 .spatial-readout-pitch { left:8px; top:34px; }
 .spatial-readout-range { right:8px; top:8px; }
+.spatial-readout-camera { right:8px; top:34px; }
