@@ -12,6 +12,7 @@
       super();
       this.world = world;
       this.world.setRange(this.rangeMeters);
+      if (this.targetLayer) this.targetLayer.style.opacity = '0.42';
     }
 
     setLocation(latitude, longitude, accuracy) {
@@ -52,6 +53,8 @@
           const point = this.projectTarget(target);
           if (!point) return;
           const radiusPx = Math.max(5, Math.min(140, (target.uncertaintyMeters || 5) / this.metersPerPixel()));
+          const confidence = Math.max(0, Math.min(1, Number(target.confidence) || 0));
+          const stackOrder = 1 + Math.round(confidence * 1000);
           const cloud = document.createElement('div');
           cloud.className = 'target-cloud';
           cloud.style.setProperty('--sensor-color', sensor.color);
@@ -59,10 +62,13 @@
           cloud.style.height = `${radiusPx * 2}px`;
           cloud.style.left = `${point.x - radiusPx}px`;
           cloud.style.top = `${point.y - radiusPx}px`;
-          cloud.style.opacity = String(Math.max(0.16, Math.min(0.82, 0.2 + target.confidence * 0.62)));
+          cloud.style.opacity = '1';
+          cloud.style.zIndex = String(stackOrder);
+          cloud.style.background = 'var(--sensor-color)';
+          cloud.style.boxShadow = 'none';
           if (target.rangeRegion) {
             const inner = Math.max(0, Math.min(95, target.rangeRegion.innerMeters / target.rangeRegion.outerMeters * 100));
-            cloud.style.background = `radial-gradient(circle, transparent ${inner}%, color-mix(in srgb, var(--sensor-color) 25%, transparent) ${Math.min(100, inner + 2)}%)`;
+            cloud.style.background = `radial-gradient(circle, transparent ${inner}%, var(--sensor-color) ${Math.min(100, inner + 2)}%)`;
           }
           this.targetLayer.appendChild(cloud);
 
@@ -72,6 +78,7 @@
             dot.style.setProperty('--sensor-color', sensor.color);
             dot.style.left = `${point.x - 4}px`;
             dot.style.top = `${point.y - 4}px`;
+            dot.style.zIndex = String(stackOrder + 1);
             this.targetLayer.appendChild(dot);
           }
         });
