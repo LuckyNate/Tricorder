@@ -10,12 +10,132 @@
     return ((Number(value) % 360) + 360) % 360;
   }
 
-  function angleDelta(a, b) {
-    return ((Number(a) - Number(b) + 540) % 360) - 180;
-  }
-
   function metersPerDegreeLng(latitude) {
     return METERS_PER_DEGREE_LAT * Math.cos(Number(latitude) * DEG);
+  }
+
+  function normalize(vector) {
+    const length = Math.hypot(vector.east, vector.north, vector.up) || 1;
+    return {
+      east: vector.east / length,
+      north: vector.north / length,
+      up: vector.up / length
+    };
+  }
+
+  function dot(a, b) {
+    return a.east * b.east + a.north * b.north + a.up * b.up;
+  }
+
+  class DeviceAxes {
+    static screenRight(displayRotation = 0) {
+      switch (Number(displayRotation)) {
+        case 1: return { x: 0, y: 1, z: 0 };
+        case 2: return { x: -1, y: 0, z: 0 };
+        case 3: return { x: 0, y: -1, z: 0 };
+        default: return { x: 1, y: 0, z: 0 };
+      }
+    }
+
+    static screenTop(displayRotation = 0) {
+      switch (Number(displayRotation)) {
+        case 1: return { x: -1, y: 0, z: 0 };
+        case 2: return { x: 0, y: -1, z: 0 };
+        case 3: return { x: 1, y: 0, z: 0 };
+        default: return { x: 0, y: 1, z: 0 };
+      }
+    }
+
+    static rearCameraForward() {
+      return { x: 0, y: 0, z: -1 };
+    }
+  }
+
+  class DeviceOrientation {
+    constructor() {
+      this.rawMatrix = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+      this.displayRotation = 0;
+      this.declinationDegrees = 0;
+      this.hasMatrix = false;
+    }
+
+    setAndroidMatrix(matrix, displayRotation = 0, declinationDegrees = 0) {
+      if (!Array.isArray(matrix) || matrix.length !== 9 || !matrix.every(value => Number.isFinite(Number(value)))) {
+        return false;
+      }
+      this.rawMatrix = matrix.map(Number);
+      this.displayRotation = Number(displayRotation) || 0;
+      this.declinationDegrees = Number(declinationDegrees) || 0;
+      this.hasMatrix = true;
+      return true;
+    }
+
+    deviceToMagneticWorld(deviceVector) {
+      const m = this.rawMatrix;
+      const x = Number(deviceVector.x) || 0;
+      const y = Number(deviceVector.y) || 0;
+      const z = Number(deviceVector.z) || 0;
+      return {
+        east: m[0] * x + m[1] * y + m[2] * z,
+        north: m[3] * x + m[4] * y + m[5] * z,
+        up: m[6] * x + m[7] * y + m[8] * z
+      };
+    }
+
+    magneticWorldToTrueEnu(vector) {
+      const angle = this.declinationDegrees * DEG;
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      return {
+        east: vector.east * cos + vector.north * sin,
+        north: -vector.east * sin + vector.north * cos,
+        up: vector.up
+      };
+    }
+
+    worldVector(deviceVector) {
+      return normalize(this.magneticWorldToTrueEnu(this.deviceToMagneticWorld(deviceVector)));
+    }
+
+    screenRight() {
+      return this.worldVector(DeviceAxes.screenRight(this.displayRotation));
+    }
+
+    screenTop() {
+      return this.worldVector(DeviceAxes.screenTop(this.displayRotation));
+    }
+
+    cameraForward() {
+      return this.worldVector(DeviceAxes.rearCameraForward());
+    }
+
+    cameraBasis() {
+      return {
+        right: this.screenRight(),
+        up: this.screenTop(),
+        forward: this.cameraForward()
+      };
+    }
+
+    mapHeadingDegrees(fallbackHeading = 0) {
+      if (!this.hasMatrix) return wrapDegrees(fallbackHeading);
+      const top = this.screenTop();
+      const horizontal = Math.hypot(top.east, top.north);
+      if (horizontal < 0.05) return wrapDegrees(fallbackHeading);
+      return wrapDegrees(Math.atan2(top.east, top.north) / DEG);
+    }
+
+    cameraElevationDegrees(fallbackPitch = 0) {
+      if (!this.hasMatrix) return -Number(fallbackPitch || 0);
+      const forward = this.cameraForward();
+      return Math.asin(clamp(forward.up, -1, 1)) / DEG;
+    }
+
+    cameraRollDegrees(fallbackRoll = 0) {
+      if (!this.hasMatrix) return Number(fallbackRoll || 0);
+      const basis = this.cameraBasis();
+      return Math.atan2(-basis.right.up, basis.up.up) / DEG;
+    }
   }
 
   class SpatialPose {
@@ -28,13 +148,23 @@
       this.heading = 0;
       this.pitch = 0;
       this.roll = 0;
+      this.rotationMatrix = null;
+      this.displayRotation = 0;
+      this.declinationDegrees = 0;
+      this.orientation = new DeviceOrientation();
     }
 
     update(values = {}) {
-      ['latitude', 'longitude', 'accuracy', 'altitude', 'verticalAccuracy', 'pitch', 'roll'].forEach(key => {
+      ['latitude', 'longitude', 'accuracy', 'altitude', 'verticalAccuracy', 'pitch', 'roll', 'displayRotation', 'declinationDegrees'].forEach(key => {
         if (Number.isFinite(Number(values[key]))) this[key] = Number(values[key]);
       });
       if (Number.isFinite(Number(values.heading))) this.heading = wrapDegrees(values.heading);
+      if (Array.isArray(values.rotationMatrix) && values.rotationMatrix.length === 9) {
+        this.rotationMatrix = values.rotationMatrix.map(Number);
+        this.orientation.setAndroidMatrix(this.rotationMatrix, this.displayRotation, this.declinationDegrees);
+      } else if (this.rotationMatrix) {
+        this.orientation.setAndroidMatrix(this.rotationMatrix, this.displayRotation, this.declinationDegrees);
+      }
       return this;
     }
 
@@ -151,26 +281,36 @@
     }
 
     rotationDegrees(pose) {
-      return -wrapDegrees(pose.heading || 0);
+      return -pose.orientation.mapHeadingDegrees(pose.heading);
     }
   }
 
   class CameraProjector {
     cameraElevationDegrees(pose) {
-      return -Number(pose.pitch || 0);
+      return pose.orientation.cameraElevationDegrees(pose.pitch);
+    }
+
+    cameraRollDegrees(pose) {
+      return pose.orientation.cameraRollDegrees(pose.roll);
     }
 
     relative(vector, pose) {
-      const yaw = angleDelta(vector.bearing, pose.heading || 0);
-      const pitch = vector.elevation - this.cameraElevationDegrees(pose);
+      if (pose.orientation.hasMatrix) {
+        const basis = pose.orientation.cameraBasis();
+        const world = { east: vector.east, north: vector.north, up: vector.up };
+        return {
+          x: dot(world, basis.right),
+          y: dot(world, basis.up),
+          z: dot(world, basis.forward)
+        };
+      }
+
+      const yaw = (vector.bearing - Number(pose.heading || 0)) * DEG;
+      const pitch = (vector.elevation + Number(pose.pitch || 0)) * DEG;
       const distance = Math.max(0.001, vector.distance);
-      const yawRad = yaw * DEG;
-      const pitchRad = pitch * DEG;
-
-      let x = distance * Math.cos(pitchRad) * Math.sin(yawRad);
-      let y = distance * Math.sin(pitchRad);
-      const z = distance * Math.cos(pitchRad) * Math.cos(yawRad);
-
+      let x = distance * Math.cos(pitch) * Math.sin(yaw);
+      let y = distance * Math.sin(pitch);
+      const z = distance * Math.cos(pitch) * Math.cos(yaw);
       const roll = Number(pose.roll || 0) * DEG;
       const cos = Math.cos(roll);
       const sin = Math.sin(roll);
@@ -276,6 +416,10 @@
       return vector ? this.topDown.project(vector, metersPerPixel, width, height) : null;
     }
 
+    mapHeadingDegrees() {
+      return this.pose.orientation.mapHeadingDegrees(this.pose.heading);
+    }
+
     mapRotationDegrees() {
       return this.topDown.rotationDegrees(this.pose);
     }
@@ -289,6 +433,8 @@
   }
 
   window.WorldSpace = {
+    DeviceAxes,
+    DeviceOrientation,
     SpatialPose,
     WorldVector3,
     VerticalEstimator,
