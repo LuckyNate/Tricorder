@@ -83,7 +83,8 @@
     function applyMode(nextMode) {
       mode = nextMode === '3d' ? '3d' : '2d';
       const is3d = mode === '3d';
-      mapRotator.hidden = is3d;
+      mapRotator.hidden = false;
+      mapRotator.style.visibility = is3d ? 'hidden' : 'visible';
       threeDView.hidden = !is3d;
       mode2d.classList.toggle('active', !is3d);
       mode3d.classList.toggle('active', is3d);
