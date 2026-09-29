@@ -88,6 +88,7 @@
       mode2d.classList.toggle('active', !is3d);
       mode3d.classList.toggle('active', is3d);
       modeToggle.setAttribute('aria-pressed', String(is3d));
+      spatial.setActive(is3d);
     }
 
     modeToggle.addEventListener('click', () => {
@@ -136,8 +137,8 @@
       return parts.join(' / ');
     }
 
-    function renderSpatialFrame() {
-      spatial.render(engine);
+    function renderSpatialFrame(now) {
+      spatial.render(engine, now);
       window.requestAnimationFrame(renderSpatialFrame);
     }
     window.requestAnimationFrame(renderSpatialFrame);
