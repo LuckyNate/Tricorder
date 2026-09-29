@@ -21,6 +21,12 @@
       <div id="startupFault" hidden></div>
     </section>
 
+    <div id="modeDock" aria-label="View mode control">
+      <button id="modeToggle" type="button" aria-pressed="false">
+        <span id="mode3d">3D</span><span class="mode-divider">/</span><span id="mode2d" class="active">2D</span>
+      </button>
+    </div>
+
     <div id="rangeDock" aria-label="Radar range control">
       <button id="range" type="button" aria-label="Change radar range">20 m radius</button>
     </div>
@@ -32,14 +38,10 @@
         </div>
         <div id="sourceStatus" aria-live="polite">Waiting for sensor samples</div>
         <div id="listPanel">
-          <div id="sensorControls" aria-label="Scanner sensor key"></div>
+          <div id="sensorControls" aria-label="Scanner display toggles"></div>
           <div id="deviceLists" aria-label="Detected devices"></div>
         </div>
       </div>
-
-      <button id="modeToggle" type="button" aria-pressed="false">
-        <span id="mode3d">3D</span><span class="mode-divider">/</span><span id="mode2d" class="active">2D</span>
-      </button>
     </section>
   </main>
 
