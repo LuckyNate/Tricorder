@@ -27,21 +27,23 @@ button { font:inherit; }
 #phoneReticle::after { height:2px; width:28px; left:-7px; top:8px; }
 #threeDView { position:absolute; inset:0; display:grid; place-items:center; color:#9fffd0; letter-spacing:.16em; background:radial-gradient(circle at center,#10281f 0,#07110d 75%); }
 #startupFault { position:absolute; left:10px; right:10px; top:10px; z-index:20; padding:9px 10px; border:1px solid #ff6b6b; border-radius:7px; background:#3b1010ee; color:#ffd7d7; font-size:12px; white-space:pre-wrap; }
-#rangeDock { flex:0 0 auto; padding:7px 10px; box-sizing:border-box; background:#08140f; border-bottom:1px solid #214c3c; }
-#range { width:100%; border:1px solid #5ba983; background:#10251d; color:#dcffec; border-radius:7px; padding:8px 10px; }
+#modeDock,#rangeDock { flex:0 0 auto; padding:7px 10px; box-sizing:border-box; background:#08140f; border-bottom:1px solid #214c3c; }
+#modeDock { padding-bottom:0; border-bottom:0; }
+#modeToggle,#range { width:100%; border:1px solid #5ba983; background:#10251d; color:#dcffec; border-radius:7px; padding:8px 10px; }
+#modeToggle .active { color:#fff; text-shadow:0 0 8px #9fffd0; }
+.mode-divider { opacity:.35; padding:0 6px; }
 #controls { flex:1 1 50%; min-height:42%; overflow:auto; padding:10px; box-sizing:border-box; background:#07110d; }
 #controlTop { display:flex; flex-direction:column; gap:10px; }
 #controlStatus { display:flex; align-items:center; justify-content:space-between; gap:12px; }
 #status { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:#b6f6d6; }
 #sourceStatus { color:#8dc7ae; font-size:11px; line-height:1.4; }
-#modeToggle { border:1px solid #5ba983; background:#10251d; color:#dcffec; border-radius:7px; padding:8px 10px; }
 #listPanel { border:1px solid #20372f; border-radius:8px; overflow:hidden; background:#08120e; }
 #sensorControls { display:flex; flex-wrap:wrap; gap:7px; padding:8px; border-bottom:1px solid #20372f; background:#0a1511; }
-.sensor-key { --sensor-color:#fff; border:1px solid var(--sensor-color); background:var(--sensor-color); color:#07110d; border-radius:7px; padding:7px 9px; display:flex; align-items:center; gap:7px; }
+.sensor-key { --sensor-color:#fff; width:30px; height:30px; box-sizing:border-box; border:1px solid var(--sensor-color); background:var(--sensor-color); color:#07110d; border-radius:7px; padding:0; display:grid; place-items:center; }
+.sensor-key > span:not(.sensor-swatch) { display:none; }
 .sensor-key.sensor-off { background:#0c1814; color:var(--sensor-color); border-color:var(--sensor-color); }
 .sensor-key.sensor-off .sensor-swatch { background:var(--sensor-color); box-shadow:0 0 10px var(--sensor-color); }
-.sensor-key.sensor-fixed { border-style:dashed; border-radius:3px; background:transparent; color:color-mix(in srgb,var(--sensor-color) 78%,#d8ffe9); letter-spacing:.08em; }
-.sensor-key.sensor-fixed .sensor-swatch { width:8px; height:8px; border-radius:50%; box-shadow:none; }
+.sensor-key.sensor-fixed { display:none; }
 .sensor-swatch { width:12px; height:12px; border-radius:3px; background:#07110d; box-shadow:none; }
 #deviceLists { display:flex; flex-direction:column; gap:10px; padding:8px; }
 .device-section { --sensor-color:#fff; border:1px solid #20372f; border-left:4px solid var(--sensor-color); border-radius:8px; overflow:hidden; background:#0a1511; }
@@ -52,13 +54,11 @@ button { font:inherit; }
 .device-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--sensor-color); }
 .device-meta { color:#94b7a7; font-size:11px; text-align:right; }
 .device-empty { padding:8px 10px; color:#577365; font-size:11px; }
-#modeToggle { width:100%; margin-top:10px; }
-#modeToggle .active { color:#fff; text-shadow:0 0 8px #9fffd0; }
-.mode-divider { opacity:.35; padding:0 6px; }
 
 @media (orientation:landscape) {
-  #app { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); grid-template-rows:minmax(0,1fr) auto; }
+  #app { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); grid-template-rows:minmax(0,1fr) auto auto; }
   #viewPane { grid-column:1; grid-row:1; min-height:0; border-bottom:0; border-right:1px solid #214c3c; }
-  #rangeDock { grid-column:1; grid-row:2; border-right:1px solid #214c3c; border-bottom:0; }
-  #controls { grid-column:2; grid-row:1 / span 2; min-height:0; height:auto; }
+  #modeDock { grid-column:1; grid-row:2; border-right:1px solid #214c3c; }
+  #rangeDock { grid-column:1; grid-row:3; border-right:1px solid #214c3c; border-bottom:0; }
+  #controls { grid-column:2; grid-row:1 / span 3; min-height:0; height:auto; }
 }
