@@ -294,8 +294,8 @@ class RadioScanner(private val context: Context) {
     }
 
     companion object {
-        private const val RTT_INTERVAL_NANOS = 2_000_000_000L
+        private const val RTT_INTERVAL_NANOS = 0L
         private const val RTT_STALE_NANOS = 15_000_000_000L
-        private const val CELL_INTERVAL_NANOS = 10_000_000_000L
+        private const val CELL_INTERVAL_NANOS = 0L
     }
 }
