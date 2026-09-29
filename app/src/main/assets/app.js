@@ -30,6 +30,7 @@
     const modeToggle = document.getElementById('modeToggle');
     const mode2d = document.getElementById('mode2d');
     const mode3d = document.getElementById('mode3d');
+    const viewPane = document.getElementById('viewPane');
     const mapRotator = document.getElementById('mapRotator');
     const threeDView = document.getElementById('threeDView');
 
@@ -84,6 +85,7 @@
       mode = nextMode === '3d' ? '3d' : '2d';
       const is3d = mode === '3d';
       mapRotator.hidden = false;
+      viewPane.classList.toggle('mode-3d', is3d);
       threeDView.hidden = !is3d;
       mode2d.classList.toggle('active', !is3d);
       mode3d.classList.toggle('active', is3d);
