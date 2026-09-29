@@ -41,9 +41,9 @@
   left:-25%;
   top:50%;
   width:150%;
-  height:1px;
-  background:#d8ffe977;
-  box-shadow:0 0 8px #9fffd055;
+  height:4px;
+  background:#0066ff;
+  box-shadow:0 0 6px #0066ff,0 0 16px #0066ff,0 0 28px #0066ff;
   transform-origin:50% 50%;
   pointer-events:none;
   will-change:transform;
