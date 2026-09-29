@@ -140,10 +140,34 @@
     renderHorizon() {
       if (!this.horizon || !this.scene) return;
       const projection = this.effectiveProjection();
-      const elevation = this.cameraElevationDegrees();
-      const offset = Math.tan(elevation * Math.PI / 180) * projection.focalY;
-      const roll = this.world.camera.cameraRollDegrees(this.world.pose);
-      this.horizon.style.transform = `translate3d(0,${offset}px,0) rotate(${roll}deg)`;
+      const pose = this.world.pose;
+
+      if (!pose.orientation.hasMatrix) {
+        const elevation = this.cameraElevationDegrees();
+        const offset = Math.tan(elevation * Math.PI / 180) * projection.focalY;
+        const roll = this.world.camera.cameraRollDegrees(pose);
+        this.horizon.style.display = 'block';
+        this.horizon.style.transform = `translate3d(0,${offset}px,0) rotate(${roll}deg)`;
+        return;
+      }
+
+      const basis = pose.orientation.cameraBasis();
+      const worldUp = { east: 0, north: 0, up: 1 };
+      const upRight = worldUp.east * basis.right.east + worldUp.north * basis.right.north + worldUp.up * basis.right.up;
+      const upScreen = worldUp.east * basis.up.east + worldUp.north * basis.up.north + worldUp.up * basis.up.up;
+      const upForward = worldUp.east * basis.forward.east + worldUp.north * basis.forward.north + worldUp.up * basis.forward.up;
+
+      if (Math.abs(upScreen) < 0.001) {
+        this.horizon.style.display = 'none';
+        return;
+      }
+
+      const offset = projection.focalY * upForward / upScreen;
+      const slope = projection.focalY * upRight / (projection.focalX * upScreen);
+      const angle = Math.atan(slope) * 180 / Math.PI;
+
+      this.horizon.style.display = 'block';
+      this.horizon.style.transform = `translate3d(0,${offset}px,0) rotate(${angle}deg)`;
     }
 
     render(engine, now = performance.now()) {
