@@ -32,7 +32,13 @@
     const mode3d = document.getElementById('mode3d');
     const viewPane = document.getElementById('viewPane');
     const mapRotator = document.getElementById('mapRotator');
+    const mapEl = document.getElementById('map');
     const threeDView = document.getElementById('threeDView');
+
+    const mapPlane = document.createElement('div');
+    mapPlane.id = 'mapPlane';
+    mapRotator.parentNode.insertBefore(mapPlane, mapRotator);
+    mapPlane.appendChild(mapRotator);
 
     let rangeIndex = 0;
     function syncRangeButton() {
@@ -42,6 +48,12 @@
 
     const radar = new RadarView();
     const spatial = new window.SpatialView(radar);
+
+    const horizonRing = document.createElement('div');
+    horizonRing.id = 'mapHorizonRing';
+    horizonRing.setAttribute('aria-hidden', 'true');
+    mapEl.appendChild(horizonRing);
+
     radar.setRange(ranges[rangeIndex]);
     spatial.setRange(ranges[rangeIndex]);
 
