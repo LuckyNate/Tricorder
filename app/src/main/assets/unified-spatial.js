@@ -109,11 +109,19 @@
       if (!radar || !radar.world) throw new Error('SpatialView requires shared world model');
       this.world = radar.world;
       this.pose = this.world.pose;
+      this.gravityVector = null;
+      this.gravityDisplayRotation = 0;
     }
 
     setPose(pose = {}) {
       this.world.setPose(pose);
       this.pose = this.world.pose;
+    }
+
+    setGravityVector(vector, displayRotation = 0) {
+      if (!Array.isArray(vector) || vector.length !== 3 || !vector.every(value => Number.isFinite(Number(value)))) return;
+      this.gravityVector = vector.map(Number);
+      this.gravityDisplayRotation = Number(displayRotation) || 0;
     }
 
     setRange(meters) {
@@ -140,8 +148,47 @@
     renderHorizon() {
       if (!this.horizon || !this.scene) return;
       const projection = this.effectiveProjection();
-      const pose = this.world.pose;
 
+      if (this.gravityVector) {
+        const [gx, gy, gz] = this.gravityVector;
+        let gravityRight;
+        let gravityUp;
+
+        switch (this.gravityDisplayRotation) {
+          case 1:
+            gravityRight = gy;
+            gravityUp = -gx;
+            break;
+          case 2:
+            gravityRight = -gx;
+            gravityUp = -gy;
+            break;
+          case 3:
+            gravityRight = -gy;
+            gravityUp = gx;
+            break;
+          default:
+            gravityRight = gx;
+            gravityUp = gy;
+            break;
+        }
+
+        const gravityForward = -gz;
+        if (Math.abs(gravityUp) < 0.001) {
+          this.horizon.style.display = 'none';
+          return;
+        }
+
+        const offset = projection.focalY * gravityForward / gravityUp;
+        const slope = projection.focalY * gravityRight / (projection.focalX * gravityUp);
+        const angle = Math.atan(slope) * 180 / Math.PI;
+
+        this.horizon.style.display = 'block';
+        this.horizon.style.transform = `translate3d(0,${offset}px,0) rotate(${angle}deg)`;
+        return;
+      }
+
+      const pose = this.world.pose;
       if (!pose.orientation.hasMatrix) {
         const elevation = this.cameraElevationDegrees();
         const offset = Math.tan(elevation * Math.PI / 180) * projection.focalY;
