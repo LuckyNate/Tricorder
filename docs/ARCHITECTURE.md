@@ -108,9 +108,13 @@ Wi-Fi Direct peers, media routes, mDNS services and SSDP advertisements feed a s
 
 ## Heading
 
-Primary heading comes from Android's rotation-vector sensor. GPS movement bearing is the fallback when orientation heading is unavailable.
+Primary heading comes from Android's rotation-vector sensor. GPS movement bearing is the fallback only when orientation heading is unavailable.
 
-Heading is smoothed before presentation. The map rotates under the phone while target coordinates stay in world space.
+Heading has one canonical meaning everywhere in Tricorder: **the horizontal direction the phone/rear camera is physically looking, expressed as true-north degrees clockwise from north**.
+
+The native layer derives that heading from the rotation matrix in world coordinates rather than from `getOrientation().azimuth`. The rear-camera optical axis (`-Z`) is projected onto the Earth-horizontal plane and converted with `atan2(east, north)`. When the rear camera is aimed too vertically for that projection to provide a stable azimuth, the current screen-top (`+Y`) world direction is used as the fallback. Magnetic declination is applied exactly once in the native layer.
+
+The WebView must treat heading as already canonical. The map rotates beneath the observer by `-heading`; JavaScript must not add device-orientation offsets, sign corrections, or 90/180 degree compensations. Pitch and roll are separate pose components and must never redefine heading.
 
 Wi-Fi/Bluetooth observation records can carry matched heading metadata so a physical sweep of the phone may add weak directional evidence when RSSI changes with orientation.
 
