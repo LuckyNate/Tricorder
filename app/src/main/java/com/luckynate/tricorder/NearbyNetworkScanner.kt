@@ -383,8 +383,8 @@ class NearbyNetworkScanner(private val context: Context) {
         private const val SSDP_ADDRESS = "239.255.255.250"
         private const val SSDP_PORT = 1900
         private const val STALE_AFTER_NANOS = 90_000_000_000L
-        private const val SSDP_SEARCH_INTERVAL_NANOS = 10_000_000_000L
-        private const val P2P_DISCOVERY_INTERVAL_NANOS = 15_000_000_000L
+        private const val SSDP_SEARCH_INTERVAL_NANOS = 0L
+        private const val P2P_DISCOVERY_INTERVAL_NANOS = 0L
         private val MEDIA_ROUTE_TYPES = MediaRouter.ROUTE_TYPE_LIVE_AUDIO or MediaRouter.ROUTE_TYPE_LIVE_VIDEO
 
         private val NSD_SERVICE_TYPES = listOf(
