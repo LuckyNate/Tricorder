@@ -8,54 +8,32 @@
   try {
     if (!window.ScannerCore) throw new Error('ScannerCore failed to load');
     if (!window.ScannerSensors) throw new Error('ScannerSensors failed to load');
-    if (!window.RadioSensors) throw new Error('RadioSensors failed to load');
     if (!window.SpatialView) throw new Error('SpatialView failed to load');
 
     const { RadarView, ScannerEngine } = window.ScannerCore;
-    const { LocationSensor, HeadingSensor, WifiSensor, BluetoothSensor, NetworkSensor } = window.ScannerSensors;
-    const { CellularSensor, applyWifiRtt, enrichBluetooth } = window.RadioSensors;
+    const { LocationSensor, HeadingSensor } = window.ScannerSensors;
 
     const ranges = [10, 20, 50, 100, 500, 1000];
-    const controlStatus = document.getElementById('controlStatus');
-    let rangeButton = document.getElementById('range');
-    if (!rangeButton && controlStatus) {
-      rangeButton = document.createElement('button');
-      rangeButton.id = 'range';
-      rangeButton.type = 'button';
-      rangeButton.setAttribute('aria-label', 'Change radar range');
-      controlStatus.appendChild(rangeButton);
-    }
-    if (!rangeButton) throw new Error('Range selector missing');
-
+    const rangeButton = document.getElementById('range');
     const modeToggle = document.getElementById('modeToggle');
     const mode2d = document.getElementById('mode2d');
     const mode3d = document.getElementById('mode3d');
     const viewPane = document.getElementById('viewPane');
     const mapRotator = document.getElementById('mapRotator');
-    const mapEl = document.getElementById('map');
     const threeDView = document.getElementById('threeDView');
+    const sourceStatus = document.getElementById('sourceStatus');
 
-    const mapPlane = document.createElement('div');
-    mapPlane.id = 'mapPlane';
-    mapRotator.parentNode.insertBefore(mapPlane, mapRotator);
-    mapPlane.appendChild(mapRotator);
-
-    let rangeIndex = 0;
-    function syncRangeButton() {
-      rangeButton.textContent = `Range: ${ranges[rangeIndex]} Meters`;
+    if (!rangeButton || !modeToggle || !mode2d || !mode3d || !viewPane || !mapRotator || !threeDView) {
+      throw new Error('Mapping UI missing');
     }
-    syncRangeButton();
 
     const radar = new RadarView();
     const spatial = new window.SpatialView(radar);
+    const engine = new ScannerEngine(radar);
 
-    const horizonRing = document.createElement('div');
-    horizonRing.id = 'mapHorizonRing';
-    horizonRing.setAttribute('aria-hidden', 'true');
-    mapEl.appendChild(horizonRing);
-
-    radar.setRange(ranges[rangeIndex]);
-    spatial.setRange(ranges[rangeIndex]);
+    // Mapping sensors only during the 3D map rebuild.
+    const locationSensor = engine.register(new LocationSensor());
+    const headingSensor = engine.register(new HeadingSensor());
 
     const pose = {
       heading: 0,
@@ -68,31 +46,20 @@
       accuracy: null
     };
 
-    function stampPose(rows) {
-      if (!Array.isArray(rows)) return rows;
-      return rows.map(raw => {
-        const next = { ...raw };
-        if (!Number.isFinite(Number(next.heading))) next.heading = pose.heading;
-        if (!Number.isFinite(Number(next.pitch))) next.pitch = pose.pitch;
-        if (!Number.isFinite(Number(next.roll))) next.roll = pose.roll;
-        if (!Number.isFinite(Number(next.altitude)) && Number.isFinite(Number(pose.altitude))) next.altitude = pose.altitude;
-        if (!Number.isFinite(Number(next.verticalAccuracy)) && Number.isFinite(Number(pose.verticalAccuracy))) next.verticalAccuracy = pose.verticalAccuracy;
-        if (!Number.isFinite(Number(next.latitude)) && Number.isFinite(Number(pose.latitude))) next.latitude = pose.latitude;
-        if (!Number.isFinite(Number(next.longitude)) && Number.isFinite(Number(pose.longitude))) next.longitude = pose.longitude;
-        if (!Number.isFinite(Number(next.accuracy)) && Number.isFinite(Number(pose.accuracy))) next.accuracy = pose.accuracy;
-        return next;
-      });
+    let rangeIndex = 1;
+    let mode = '2d';
+
+    function syncRangeButton() {
+      rangeButton.textContent = `${ranges[rangeIndex]} m radius`;
     }
 
-    rangeButton.addEventListener('click', () => {
-      rangeIndex = (rangeIndex + 1) % ranges.length;
-      const range = ranges[rangeIndex];
-      syncRangeButton();
-      radar.setRange(range);
-      spatial.setRange(range);
-    });
+    function showMappingStatus() {
+      if (!sourceStatus) return;
+      const location = Number.isFinite(Number(pose.latitude)) && Number.isFinite(Number(pose.longitude));
+      const altitude = Number.isFinite(Number(pose.altitude));
+      sourceStatus.textContent = `mapping · location ${location ? 'live' : 'waiting'} · altitude ${altitude ? `${pose.altitude.toFixed(1)} m` : 'waiting'} · orientation live`;
+    }
 
-    let mode = '2d';
     function applyMode(nextMode) {
       mode = nextMode === '3d' ? '3d' : '2d';
       const is3d = mode === '3d';
@@ -105,62 +72,32 @@
       spatial.setActive(is3d);
     }
 
+    function setRange(index) {
+      rangeIndex = Math.max(0, Math.min(ranges.length - 1, Number(index) || 0));
+      const range = ranges[rangeIndex];
+      radar.setRange(range);
+      spatial.setRange(range);
+      syncRangeButton();
+    }
+
+    rangeButton.addEventListener('click', () => {
+      setRange((rangeIndex + 1) % ranges.length);
+    });
+
     modeToggle.addEventListener('click', () => {
       applyMode(mode === '2d' ? '3d' : '2d');
     });
-
-    const engine = new ScannerEngine(radar);
-    const sourceStatus = document.getElementById('sourceStatus');
-    const sourceState = {
-      location: 'location waiting',
-      wifi: 'Wi-Fi waiting',
-      bluetooth: 'Bluetooth waiting',
-      cellular: 'cellular waiting',
-      network: 'network waiting',
-      radios: 'radio capabilities waiting'
-    };
-    const availability = {};
-    let receivedWifiSnapshot = false;
-    function showSources() {
-      if (receivedWifiSnapshot && !availability.wifi) {
-        const wifiTargets = [...wifiSensor.targets.values()];
-        const fresh = wifiTargets.some(target => Date.now() - target.lastReceivedAt + target.sampleAgeMs < 5000);
-        sourceState.wifi = `Wi-Fi ${wifiTargets.length} (${fresh ? 'fresh' : 'cached / waiting for new scan'})`;
-      }
-      if (sourceStatus) sourceStatus.textContent = Object.keys(sourceState)
-        .map(id => availability[id] ? `${id}: ${availability[id]}` : sourceState[id]).join(' · ');
-    }
-
-    const locationSensor = engine.register(new LocationSensor());
-    const headingSensor = engine.register(new HeadingSensor());
-    const wifiSensor = engine.register(new WifiSensor());
-    const bluetoothSensor = engine.register(new BluetoothSensor());
-    const cellularSensor = engine.register(new CellularSensor());
-    const networkSensor = engine.register(new NetworkSensor());
-
-    function radioCapabilityText(capabilities) {
-      if (!capabilities || typeof capabilities !== 'object') return 'radio capabilities unknown';
-      const parts = [];
-      parts.push(capabilities.wifiRttSupported
-        ? `RTT ${capabilities.wifiRttAvailable ? 'ready' : 'unavailable'}`
-        : 'RTT unsupported');
-      parts.push(capabilities.wifiAwareSupported
-        ? `Aware ${capabilities.wifiAwareAvailable ? 'ready' : 'unavailable'}`
-        : 'Aware unsupported');
-      parts.push(capabilities.uwbSupported ? 'UWB peer-ready' : 'UWB unsupported');
-      return parts.join(' / ');
-    }
 
     function renderSpatialFrame(now) {
       spatial.render(engine, now);
       window.requestAnimationFrame(renderSpatialFrame);
     }
-    window.requestAnimationFrame(renderSpatialFrame);
 
     window.Tricorder = {
       engine,
       radar,
       spatial,
+
       snapshotState() {
         return JSON.stringify({
           schemaVersion: 1,
@@ -169,29 +106,24 @@
           ui: { mode, rangeIndex }
         });
       },
+
       restoreState(snapshot) {
         try {
           const state = typeof snapshot === 'string' ? JSON.parse(snapshot) : snapshot;
-          if (!state || state.schemaVersion !== 1 || !state.engine) return false;
-          if (!engine.importRecoveryState(state.engine)) return false;
-          const restoredRange = Number(engine.radar.rangeMeters);
-          const restoredIndex = ranges.indexOf(restoredRange);
-          if (restoredIndex >= 0) rangeIndex = restoredIndex;
-          else if (state.ui && Number.isInteger(Number(state.ui.rangeIndex))) {
-            rangeIndex = Math.max(0, Math.min(ranges.length - 1, Number(state.ui.rangeIndex)));
-            radar.setRange(ranges[rangeIndex]);
-          }
-          spatial.setRange(ranges[rangeIndex]);
-          syncRangeButton();
+          if (!state || state.schemaVersion !== 1) return false;
+          if (state.engine) engine.importRecoveryState(state.engine);
+          const savedRangeIndex = state.ui && Number.isInteger(Number(state.ui.rangeIndex))
+            ? Number(state.ui.rangeIndex)
+            : rangeIndex;
+          setRange(savedRangeIndex);
           applyMode(state.ui && state.ui.mode === '3d' ? '3d' : '2d');
-          engine.needsRender = true;
-          showSources();
           return true;
         } catch (error) {
           fault(error.message || error);
           return false;
         }
       },
+
       onLocation(latitude, longitude, accuracy, altitude, verticalAccuracy) {
         try {
           locationSensor.ingest(latitude, longitude, accuracy);
@@ -200,80 +132,67 @@
           pose.accuracy = Number(accuracy);
           if (Number.isFinite(Number(altitude))) pose.altitude = Number(altitude);
           if (Number.isFinite(Number(verticalAccuracy))) pose.verticalAccuracy = Number(verticalAccuracy);
-          if (radar.location) {
-            radar.location.altitude = pose.altitude;
-            radar.location.verticalAccuracy = pose.verticalAccuracy;
-          }
+          radar.world.setLocation(
+            pose.latitude,
+            pose.longitude,
+            pose.accuracy,
+            pose.altitude,
+            pose.verticalAccuracy
+          );
           spatial.setPose(pose);
-          sourceState.location = `observer ±${Math.round(Number(accuracy) || 0)}m`;
-          showSources();
-        } catch (error) { fault(error.message || error); }
+          if (typeof radar.syncReferenceOverlay === 'function') radar.syncReferenceOverlay();
+          showMappingStatus();
+        } catch (error) {
+          fault(error.message || error);
+        }
       },
-      onHeading(heading, accuracy, source, pitch, roll) {
+
+      onHeading(heading, _accuracy, _source, pitch, roll) {
         try {
           headingSensor.ingest(heading);
           pose.heading = Number(heading) || 0;
           if (Number.isFinite(Number(pitch))) pose.pitch = Number(pitch);
           if (Number.isFinite(Number(roll))) pose.roll = Number(roll);
           spatial.setPose(pose);
-        } catch (error) { fault(error.message || error); }
-      },
-      onWifiScan(observations) {
-        try {
-          const stamped = stampPose(observations);
-          wifiSensor.ingest(stamped);
-          receivedWifiSnapshot = true;
-          if (stamped.some(o => Number(o.ageMs) < 5000)) delete availability.wifi;
-          engine.needsRender = true;
-          showSources();
-        } catch (error) { fault(error.message || error); }
-      },
-      onBluetoothScan(observations) {
-        try {
-          const stamped = stampPose(observations);
-          bluetoothSensor.ingest(stamped);
-          enrichBluetooth(bluetoothSensor, stamped);
-          sourceState.bluetooth = `Bluetooth ${bluetoothSensor.targets.size}`;
-          engine.needsRender = true;
-          showSources();
-        } catch (error) { fault(error.message || error); }
-      },
-      onRadioFrame(frame) {
-        try {
-          const payload = frame || {};
-          const rtt = Array.isArray(payload.rtt) ? payload.rtt : [];
-          const cellular = stampPose(Array.isArray(payload.cellular) ? payload.cellular : []);
-          applyWifiRtt(wifiSensor, rtt);
-          cellularSensor.ingest(cellular);
-          sourceState.cellular = `cellular ${cellularSensor.targets.size}`;
-          sourceState.radios = radioCapabilityText(payload.capabilities);
-          engine.needsRender = true;
-          showSources();
-        } catch (error) { fault(error.message || error); }
-      },
-      onNearbyNetworkScan(observations) {
-        try {
-          networkSensor.ingest(stampPose(observations));
-          sourceState.network = `network ${networkSensor.targets.size}`;
-          showSources();
-        } catch (error) { fault(error.message || error); }
-      },
-      onStatus(message) { engine.setStatus(String(message || '')); },
-      onSensorAvailability(id, state) {
-        if (Object.prototype.hasOwnProperty.call(sourceState, id)) {
-          if (state) availability[id] = String(state);
-          else delete availability[id];
-          showSources();
+        } catch (error) {
+          fault(error.message || error);
         }
       },
-      registerSensor(sensor) { return engine.register(sensor); },
-      getSensor(id) { return engine.get(id); }
+
+      // Non-mapping sensor actions are intentionally disabled for this rebuild.
+      onWifiScan() {},
+      onBluetoothScan() {},
+      onRadioFrame() {},
+      onNearbyNetworkScan() {},
+      onHardwareSensorCatalog() {},
+      onHardwareSensorFrame() {},
+      onGnssFrame() {},
+      onNfcTag() {},
+
+      onStatus(message) {
+        engine.setStatus(String(message || ''));
+      },
+
+      onSensorAvailability() {
+        // Disabled while only the mapping sensors are active.
+      },
+
+      registerSensor(sensor) {
+        return engine.register(sensor);
+      },
+
+      getSensor(id) {
+        return engine.get(id);
+      }
     };
 
+    setRange(rangeIndex);
+    applyMode('2d');
+    showMappingStatus();
     engine.refreshControls();
-    engine.setStatus('Scanner ready — waiting for sensors');
-    window.setInterval(showSources, 1000);
+    engine.setStatus('Mapping rebuild — detections disabled');
     engine.start();
+    window.requestAnimationFrame(renderSpatialFrame);
   } catch (error) {
     fault(error && error.message ? error.message : error);
   }
