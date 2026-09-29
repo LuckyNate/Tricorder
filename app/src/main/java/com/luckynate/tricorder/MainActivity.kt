@@ -63,6 +63,8 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     private var latestHeadingDegrees: Float? = null
     private var latestPitchDegrees = 0f
     private var latestRollDegrees = 0f
+    private var latestRotationMatrix: FloatArray? = null
+    private var latestDisplayRotation = Surface.ROTATION_0
     private var headingAccuracy = SensorManager.SENSOR_STATUS_UNRELIABLE
     private var headingSource = "none"
     private val locationHistory = ArrayDeque<Location>()
@@ -301,6 +303,8 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
             @Suppress("DEPRECATION")
             windowManager.defaultDisplay.rotation
         }
+        latestRotationMatrix = rawRotation.copyOf()
+        latestDisplayRotation = displayRotation
 
         val (axisX, axisY) = when (displayRotation) {
             Surface.ROTATION_90 -> SensorManager.AXIS_Y to SensorManager.AXIS_MINUS_X
@@ -312,7 +316,9 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         if (!SensorManager.remapCoordinateSystem(rawRotation, axisX, axisY, screenRotation)) return
         SensorManager.getOrientation(screenRotation, orientation)
 
-        val heading = worldLookHeading(rawRotation, screenRotation)
+        var heading = orientation[0] * 180f / PI.toFloat()
+        if (heading < 0f) heading += 360f
+        heading = magneticToTrueHeading(heading)
         val pitch = orientation[1] * 180f / PI.toFloat()
         val roll = orientation[2] * 180f / PI.toFloat()
 
@@ -323,40 +329,19 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
         recordHeadingSample(event.timestamp, heading, pitch, roll, headingAccuracy, headingSource)
     }
 
-    private fun worldLookHeading(rawRotation: FloatArray, screenRotation: FloatArray): Float {
-        // Rotation matrices transform device axes into Android's world frame:
-        // +X east, +Y magnetic north, +Z sky. The rear camera looks along device -Z.
-        val cameraEast = -rawRotation[2]
-        val cameraNorth = -rawRotation[5]
-        val cameraHorizontal = Math.hypot(cameraEast.toDouble(), cameraNorth.toDouble()).toFloat()
-
-        // When the rear camera is aimed mostly vertically, its horizontal azimuth is unstable.
-        // In that case use the current screen-top (+Y) direction from the display-remapped matrix.
-        val east: Float
-        val north: Float
-        if (cameraHorizontal >= 0.35f) {
-            east = cameraEast
-            north = cameraNorth
-        } else {
-            east = screenRotation[1]
-            north = screenRotation[4]
-        }
-
-        var magneticHeading = Math.toDegrees(Math.atan2(east.toDouble(), north.toDouble())).toFloat()
-        if (magneticHeading < 0f) magneticHeading += 360f
-        return magneticToTrueHeading(magneticHeading)
-    }
-
-    private fun magneticToTrueHeading(magneticHeading: Float): Float {
-        val location = latestGpsLocation ?: latestLocation ?: return magneticHeading
+    private fun geomagneticDeclinationDegrees(): Float {
+        val location = latestGpsLocation ?: latestLocation ?: return 0f
         val altitudeMeters = if (location.hasAltitude()) location.altitude.toFloat() else 0f
-        val field = GeomagneticField(
+        return GeomagneticField(
             location.latitude.toFloat(),
             location.longitude.toFloat(),
             altitudeMeters,
             System.currentTimeMillis()
-        )
-        return ((magneticHeading + field.declination) % 360f + 360f) % 360f
+        ).declination
+    }
+
+    private fun magneticToTrueHeading(magneticHeading: Float): Float {
+        return ((magneticHeading + geomagneticDeclinationDegrees()) % 360f + 360f) % 360f
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
@@ -667,7 +652,10 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     private fun sendHeading() {
         val heading = latestHeadingDegrees ?: return
         val source = headingSource.replace("\\", "\\\\").replace("'", "\\'")
-        val script = "window.Tricorder && window.Tricorder.onHeading($heading,$headingAccuracy,'$source',$latestPitchDegrees,$latestRollDegrees);"
+        val matrixPayload = latestRotationMatrix?.joinToString(prefix = "[", postfix = "]") ?: "null"
+        val declination = geomagneticDeclinationDegrees()
+        val script = "window.Tricorder && window.Tricorder.onHeading($heading,$headingAccuracy,'$source',$latestPitchDegrees,$latestRollDegrees);" +
+            "window.Tricorder && window.Tricorder.onOrientationMatrix && window.Tricorder.onOrientationMatrix($matrixPayload,$latestDisplayRotation,$declination);"
         runOnUiThread { webView.evaluateJavascript(script, null) }
     }
 
