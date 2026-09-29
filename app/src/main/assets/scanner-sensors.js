@@ -5,6 +5,8 @@ const METERS_PER_DEGREE_LAT = 111320;
 const SOLVER_STEP_METERS = 8;
 const MIN_HEADING_SWEEP_DEGREES = 30;
 const MAX_SOLVER_RADIUS_METERS = 180;
+const SOLUTION_EPSILON_METERS = 0.05;
+const SOLUTION_EPSILON_CONFIDENCE = 0.005;
 
 function metersPerDegreeLng(latitude) {
   return METERS_PER_DEGREE_LAT * Math.cos(latitude * Math.PI / 180);
@@ -33,6 +35,36 @@ function bearingDegrees(a, b) {
 
 function angularDifferenceDegrees(a, b) {
   return ((a - b + 540) % 360) - 180;
+}
+
+function acceptSpatialSolution(target, solution = {}) {
+  if (!target || !solution.position) return false;
+  const latitude = Number(solution.position.latitude);
+  const longitude = Number(solution.position.longitude);
+  const uncertainty = Number(solution.uncertaintyMeters);
+  const confidence = Number(solution.confidence);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || !Number.isFinite(uncertainty) || !Number.isFinite(confidence)) return false;
+
+  const hasCurrent = Boolean(target.position) && Number.isFinite(Number(target.uncertaintyMeters)) && Number.isFinite(Number(target.confidence));
+  if (hasCurrent) {
+    const currentUncertainty = Number(target.uncertaintyMeters);
+    const currentConfidence = Number(target.confidence);
+    const uncertaintyNoWorse = uncertainty <= currentUncertainty + SOLUTION_EPSILON_METERS;
+    const confidenceNoWorse = confidence + SOLUTION_EPSILON_CONFIDENCE >= currentConfidence;
+    const strictlyBetter =
+      uncertainty < currentUncertainty - SOLUTION_EPSILON_METERS ||
+      confidence > currentConfidence + SOLUTION_EPSILON_CONFIDENCE;
+    if (!uncertaintyNoWorse || !confidenceNoWorse || !strictlyBetter) return false;
+  }
+
+  target.position = { ...solution.position, latitude, longitude };
+  target.rangeRegion = solution.rangeRegion === undefined ? null : solution.rangeRegion;
+  target.uncertaintyMeters = uncertainty;
+  target.confidence = confidence;
+  if (Number.isFinite(Number(solution.directionSpreadMeters))) target.directionSpreadMeters = Number(solution.directionSpreadMeters);
+  if (Number.isFinite(Number(solution.headingSweepDegrees))) target.headingSweepDegrees = Number(solution.headingSweepDegrees);
+  target.solutionUpdatedAt = Date.now();
+  return true;
 }
 
 function weightedCenter(observations) {
@@ -266,31 +298,34 @@ class RangedRadioSensor extends Sensor {
     if (hasGeometry) {
       const solved = this.solveDirectionalTarget(target);
       if (solved) {
-        target.position = solved.position;
-        target.rangeRegion = null;
-        target.uncertaintyMeters = solved.uncertaintyMeters;
-        target.confidence = solved.confidence;
-        target.directionSpreadMeters = solved.spread;
-        target.headingSweepDegrees = solved.headingSweep;
+        acceptSpatialSolution(target, {
+          position: solved.position,
+          rangeRegion: null,
+          uncertaintyMeters: solved.uncertaintyMeters,
+          confidence: solved.confidence,
+          directionSpreadMeters: solved.spread,
+          headingSweepDegrees: solved.headingSweep
+        });
         return;
       }
     }
 
     const center = weightedCenter(positioned);
     if (!center) {
-      target.position = null;
-      target.rangeRegion = null;
-      target.confidence = 0.08;
+      if (!target.position) target.confidence = Math.max(Number(target.confidence) || 0, 0.08);
       return;
     }
     const ranges = positioned.map(o => this.rangeFromRssi(o.rssi));
     const averageRange = ranges.reduce((a, b) => a + b, 0) / ranges.length;
     const countConfidence = Math.min(1, positioned.length / 14);
-    target.position = center;
     const width = Math.max(3, averageRange * 0.5, latest ? latest.accuracy : 10);
-    target.rangeRegion = { center, innerMeters: Math.max(0, averageRange - width), outerMeters: averageRange + width };
-    target.uncertaintyMeters = target.rangeRegion.outerMeters;
-    target.confidence = Math.max(0.08, Math.min(0.42, 0.10 + countConfidence * 0.32));
+    const rangeRegion = { center, innerMeters: Math.max(0, averageRange - width), outerMeters: averageRange + width };
+    acceptSpatialSolution(target, {
+      position: center,
+      rangeRegion,
+      uncertaintyMeters: rangeRegion.outerMeters,
+      confidence: Math.max(0.08, Math.min(0.42, 0.10 + countConfidence * 0.32))
+    });
   }
 }
 
@@ -347,11 +382,10 @@ class BluetoothSensor extends RangedRadioSensor {
       target.addObservation(observation);
       if (Number.isFinite(observation.rssi)) {
         this.updateTarget(target);
-      } else {
-        target.position = null;
+      } else if (!target.position) {
         target.rangeRegion = null;
         target.uncertaintyMeters = 80;
-        target.confidence = 0.08;
+        target.confidence = Math.max(Number(target.confidence) || 0, 0.08);
       }
     });
     [...this.targets.keys()].forEach(id => {
@@ -389,5 +423,5 @@ class NetworkSensor extends Sensor {
   }
 }
 
-window.ScannerSensors = { LocationSensor, HeadingSensor, WifiSensor, BluetoothSensor, NetworkSensor };
+window.ScannerSensors = { LocationSensor, HeadingSensor, WifiSensor, BluetoothSensor, NetworkSensor, acceptSpatialSolution };
 })();
