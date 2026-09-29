@@ -9,10 +9,15 @@
     return ((target - current + 540) % 360) - 180;
   }
 
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+
   class HybridHorizonSpatialView extends BaseSpatialView {
     constructor(...args) {
       super(...args);
       this.hybridHorizon = null;
+      this.mapPlane = document.getElementById('mapPlane');
     }
 
     gravityHorizon(projection) {
@@ -66,6 +71,14 @@
       };
     }
 
+    alignMapPlane(projection) {
+      if (!this.mapPlane || !this.hybridHorizon) return;
+      const elevation = this.cameraElevationDegrees();
+      const tilt = clamp(78 + elevation, 8, 89);
+      const scale = 1.45;
+      this.mapPlane.style.transform = `translate3d(0,${this.hybridHorizon.offset}px,0) rotate(${this.hybridHorizon.angle}deg) perspective(${Math.max(480, projection.focalY * 1.6)}px) rotateX(${tilt}deg) scale(${scale})`;
+    }
+
     renderHorizon() {
       if (!this.horizon || !this.scene) return;
       const projection = this.effectiveProjection();
@@ -74,6 +87,7 @@
 
       if (!gravity) {
         super.renderHorizon();
+        this.horizon.style.display = 'none';
         return;
       }
 
@@ -89,8 +103,8 @@
       this.hybridHorizon.offset += (gravity.offset - this.hybridHorizon.offset) * GRAVITY_CORRECTION;
       this.hybridHorizon.angle += shortestAngleDelta(gravity.angle, this.hybridHorizon.angle) * GRAVITY_CORRECTION;
 
-      this.horizon.style.display = 'block';
-      this.horizon.style.transform = `translate3d(0,${this.hybridHorizon.offset}px,0) rotate(${this.hybridHorizon.angle}deg)`;
+      this.horizon.style.display = 'none';
+      this.alignMapPlane(projection);
     }
   }
 
