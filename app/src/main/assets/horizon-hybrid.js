@@ -2,7 +2,6 @@
   if (!window.SpatialView) throw new Error('Hybrid horizon loaded before SpatialView');
 
   const BaseSpatialView = window.SpatialView;
-  const HORIZON_MODE = 'hybrid'; // Set to 'gravity' to restore the gravity-only horizon.
   const INERTIAL_GAIN = 0.72;
   const GRAVITY_CORRECTION = 0.10;
 
@@ -68,11 +67,6 @@
     }
 
     renderHorizon() {
-      if (HORIZON_MODE === 'gravity') {
-        super.renderHorizon();
-        return;
-      }
-
       if (!this.horizon || !this.scene) return;
       const projection = this.effectiveProjection();
       const gravity = this.gravityHorizon(projection);
