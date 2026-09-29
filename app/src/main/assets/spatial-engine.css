@@ -1,0 +1,30 @@
+#viewPane.mode-3d #mapRotator {
+  opacity:0 !important;
+  pointer-events:none !important;
+  transform-style:flat !important;
+}
+
+#viewPane.mode-3d #map {
+  opacity:0 !important;
+  transform:none !important;
+}
+
+#viewPane.mode-3d #phoneReticle {
+  display:none;
+}
+
+#threeDView {
+  z-index:5;
+}
+
+.ar-ground-map {
+  z-index:20;
+}
+
+#spatialTargets {
+  z-index:40;
+}
+
+.spatial-horizon {
+  z-index:30;
+}
