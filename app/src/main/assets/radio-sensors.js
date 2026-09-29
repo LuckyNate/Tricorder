@@ -1,5 +1,6 @@
 (() => {
 const { Sensor } = window.ScannerCore;
+const { acceptSpatialSolution } = window.ScannerSensors;
 
 const METERS_PER_DEGREE_LAT = 111320;
 const rttHistory = new Map();
@@ -106,11 +107,8 @@ function applyWifiRtt(wifiSensor, rows) {
     if (history.length > 24) history.splice(0, history.length - 24);
 
     const solved = solveRtt(history);
-    if (solved) {
-      target.position = solved.position;
-      target.rangeRegion = solved.rangeRegion;
-      target.uncertaintyMeters = solved.uncertaintyMeters;
-      target.confidence = Math.max(target.confidence || 0, solved.confidence);
+    if (solved && typeof acceptSpatialSolution === 'function') {
+      acceptSpatialSolution(target, solved);
     }
     target.rttDistanceMeters = distance;
     target.rttStdDevMeters = Number(raw.distanceStdDevMeters) || 0;
