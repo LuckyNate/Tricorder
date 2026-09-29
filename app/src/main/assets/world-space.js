@@ -197,77 +197,23 @@
         };
       }
 
-      const samples = (target.observations || []).filter(observation => {
-        const raw = observation.raw || {};
-        return Number.isFinite(Number(raw.pitch)) && Number.isFinite(Number(observation.rssi));
-      });
-
-      if (!samples.length || !Number.isFinite(pose.altitude)) {
-        return {
-          altitude: pose.altitude,
-          uncertainty: Math.max(Number(target.uncertaintyMeters) || 5, rangeMeters * 0.55),
-          confidence: 0
-        };
-      }
-
-      const meanRssi = samples.reduce((sum, observation) => sum + Number(observation.rssi), 0) / samples.length;
-      let weightedElevation = 0;
-      let weightTotal = 0;
-      let elevationMean = 0;
-      let elevationSq = 0;
-
-      samples.forEach(observation => {
-        const raw = observation.raw || {};
-        const elevation = -Number(raw.pitch);
-        const signalBias = clamp((Number(observation.rssi) - meanRssi + 8) / 16, 0.08, 1);
-        const accuracy = Math.max(4, Number(observation.accuracy) || 25);
-        const weight = signalBias / accuracy;
-        weightedElevation += elevation * weight;
-        weightTotal += weight;
-      });
-
-      if (!weightTotal) {
-        return {
-          altitude: pose.altitude,
-          uncertainty: Math.max(Number(target.uncertaintyMeters) || 5, rangeMeters * 0.55),
-          confidence: 0
-        };
-      }
-
-      const elevation = clamp(weightedElevation / weightTotal, -75, 75);
-      samples.forEach(observation => {
-        const sampleElevation = -Number((observation.raw || {}).pitch);
-        elevationMean += sampleElevation;
-        elevationSq += sampleElevation * sampleElevation;
-      });
-      elevationMean /= samples.length;
-      const elevationVariance = Math.max(0, elevationSq / samples.length - elevationMean * elevationMean);
-      const elevationSigma = Math.sqrt(elevationVariance);
-      const verticalOffset = Math.tan(elevation * DEG) * Math.max(0.5, horizontalDistance);
-      const verticalUncertainty = Math.max(
+      const baseUncertainty = Math.max(
         3,
-        Math.abs(Math.tan(Math.min(45, elevationSigma + 8) * DEG) * Math.max(1, horizontalDistance)),
-        Number(pose.verticalAccuracy) || 0
+        Number(target.uncertaintyMeters) || 5,
+        Number(pose.verticalAccuracy) || 0,
+        Math.min(Number(rangeMeters) || 20, Math.max(3, horizontalDistance * 0.5))
       );
 
       return {
-        altitude: pose.altitude + clamp(verticalOffset, -rangeMeters, rangeMeters),
-        uncertainty: clamp(verticalUncertainty, 3, rangeMeters),
-        confidence: clamp(samples.length / 16, 0, 0.65)
+        altitude: Number.isFinite(pose.altitude) ? pose.altitude : null,
+        uncertainty: baseUncertainty,
+        confidence: 0
       };
     }
 
     best(target, candidate) {
-      const previous = target.spatialVertical;
-      if (!previous) {
-        target.spatialVertical = candidate;
-        return candidate;
-      }
-      const uncertaintyNoWorse = candidate.uncertainty <= previous.uncertainty + 0.05;
-      const confidenceNoWorse = candidate.confidence + 0.005 >= previous.confidence;
-      const strictlyBetter = candidate.uncertainty < previous.uncertainty - 0.05 || candidate.confidence > previous.confidence + 0.005;
-      if (uncertaintyNoWorse && confidenceNoWorse && strictlyBetter) target.spatialVertical = candidate;
-      return target.spatialVertical;
+      target.spatialVertical = candidate;
+      return candidate;
     }
   }
 
