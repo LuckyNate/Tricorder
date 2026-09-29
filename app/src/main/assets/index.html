@@ -18,7 +18,7 @@
       <div id="phoneReticle" aria-hidden="true"></div>
       <div id="threeDView" hidden>
         <video id="spatialCamera" autoplay muted playsinline aria-hidden="true"></video>
-        <div id="spatialScene" aria-label="3D augmented-reality sensor view"></div>
+        <div id="spatialScene" aria-label="3D augmented-reality map view"></div>
       </div>
       <div id="startupFault" hidden></div>
     </section>
@@ -38,7 +38,7 @@
         <div id="controlStatus">
           <div id="status">Starting scanner</div>
         </div>
-        <div id="sourceStatus" aria-live="polite">Waiting for sensor samples</div>
+        <div id="sourceStatus" aria-live="polite">Waiting for mapping samples</div>
         <div id="listPanel">
           <div id="sensorControls" aria-label="Scanner display toggles"></div>
           <div id="deviceLists" aria-label="Detected devices"></div>
@@ -72,12 +72,19 @@
   <script src="map-reference-overlay.js"></script>
   <script src="state-recovery.js"></script>
   <script src="scanner-sensors.js"></script>
+
+  <!-- Detection/sensor modules intentionally disabled during the map-only rebuild.
   <script src="radio-sensors.js"></script>
   <script src="phone-sensors.js"></script>
   <script src="wifi-peer-sensors.js"></script>
+  -->
+
   <script src="app.js"></script>
   <script src="orientation-bridge.js"></script>
+
+  <!-- Detection/sensor bridges intentionally disabled during the map-only rebuild.
   <script src="phone-sensors-bridge.js"></script>
   <script src="wifi-peer-bridge.js"></script>
+  -->
 </body>
 </html>
