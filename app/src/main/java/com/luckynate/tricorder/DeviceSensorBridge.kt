@@ -44,7 +44,7 @@ class DeviceSensorBridge(
         override fun run() {
             if (!running) return
             emitFrame()
-            mainHandler.postDelayed(this, 100L)
+            mainHandler.postDelayed(this, 33L)
         }
     }
 
