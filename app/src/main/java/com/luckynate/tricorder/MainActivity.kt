@@ -83,8 +83,8 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     companion object {
         private const val SENSOR_PERMISSION_REQUEST = 1001
         private const val SENSOR_FRAME_INTERVAL_MS = 33L
-        private const val WIFI_SCAN_INTERVAL_MS = 30_000L
-        private const val RADIO_FRAME_INTERVAL_MS = 1_000L
+        private const val WIFI_SCAN_INTERVAL_MS = 0L
+        private const val RADIO_FRAME_INTERVAL_MS = 0L
         private const val STATE_SNAPSHOT_INTERVAL_MS = 10_000L
         private const val GPS_FRESH_NANOS = 30_000_000_000L
         private const val MAX_LOCATION_HISTORY = 128
