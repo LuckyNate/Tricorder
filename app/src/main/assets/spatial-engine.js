@@ -58,13 +58,22 @@
     const vertexShader = compileShader(gl, gl.VERTEX_SHADER, `
       attribute vec3 aPosition;
       attribute vec2 aUv;
+      uniform float uAspect;
       varying vec2 vUv;
 
       void main() {
-        float depth = mix(0.82, 2.2, aPosition.z);
-        float projectedX = aPosition.x / depth;
-        float projectedY = mix(-0.90, 0.42, aPosition.z);
-        gl_Position = vec4(projectedX, projectedY, 0.0, 1.0);
+        float f = 1.7320508;
+        float nearPlane = 0.1;
+        float farPlane = 100.0;
+        float z = aPosition.z;
+
+        gl_Position = vec4(
+          aPosition.x * f / uAspect,
+          aPosition.y * f,
+          ((farPlane + nearPlane) / (nearPlane - farPlane)) * z +
+            ((2.0 * farPlane * nearPlane) / (nearPlane - farPlane)),
+          -z
+        );
         vUv = aUv;
       }
     `);
@@ -107,6 +116,7 @@
       this.gl = null;
       this.program = null;
       this.texture = null;
+      this.aspectLocation = null;
       this.initScene();
     }
 
@@ -120,20 +130,22 @@
       this.scene.appendChild(this.canvas);
 
       const gl = this.canvas.getContext('webgl', {
-        alpha: true,
+        alpha: false,
         antialias: true,
-        depth: false,
+        depth: true,
         premultipliedAlpha: false
       });
       if (!gl) throw new Error('WebGL unavailable for 3D map mesh');
       this.gl = gl;
       this.program = createProgram(gl);
 
+      // One horizontal world-space quad, two triangles. Camera is at the origin
+      // looking down -Z; the map lies below it and extends forward.
       const vertices = new Float32Array([
-        -1, 0, 0,   0, 1,
-         1, 0, 0,   1, 1,
-        -1, 0, 1,   0, 0,
-         1, 0, 1,   1, 0
+        -2.2, -1.15, -1.5,   0, 1,
+         2.2, -1.15, -1.5,   1, 1,
+        -2.2, -1.15, -6.0,   0, 0,
+         2.2, -1.15, -6.0,   1, 0
       ]);
 
       const indices = new Uint16Array([
@@ -166,9 +178,12 @@
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
       gl.useProgram(this.program);
-      const mapLocation = gl.getUniformLocation(this.program, 'uMap');
-      gl.uniform1i(mapLocation, 0);
-      gl.clearColor(0, 0, 0, 0);
+      gl.uniform1i(gl.getUniformLocation(this.program, 'uMap'), 0);
+      this.aspectLocation = gl.getUniformLocation(this.program, 'uAspect');
+      gl.enable(gl.DEPTH_TEST);
+      gl.depthFunc(gl.LEQUAL);
+      gl.disable(gl.CULL_FACE);
+      gl.clearColor(0.008, 0.016, 0.012, 1.0);
     }
 
     sourceCanvas() {
@@ -185,6 +200,10 @@
         this.canvas.height = height;
       }
       this.gl.viewport(0, 0, width, height);
+      if (this.aspectLocation) {
+        this.gl.useProgram(this.program);
+        this.gl.uniform1f(this.aspectLocation, width / height);
+      }
     }
 
     setActive(active) {
@@ -219,12 +238,13 @@
         this.radar.syncReferenceOverlay();
       }
 
+      this.resize();
+      const gl = this.gl;
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
       const source = this.sourceCanvas();
       if (!source || !source.width || !source.height) return;
 
-      this.resize();
-      const gl = this.gl;
-      gl.clear(gl.COLOR_BUFFER_BIT);
       gl.useProgram(this.program);
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, this.texture);
