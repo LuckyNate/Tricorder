@@ -46,7 +46,21 @@
   background:#020403 !important;
 }
 
-#threeDView[data-map-first="true"] #spatialCamera,
-#threeDView[data-map-first="true"] #spatialScene {
+#threeDView[data-map-first="true"] #spatialCamera {
   display:none !important;
+}
+
+#threeDView[data-map-first="true"] #spatialScene {
+  display:block !important;
+  position:absolute;
+  inset:0;
+  overflow:hidden;
+}
+
+.spatial-map-mesh {
+  position:absolute;
+  inset:0;
+  width:100%;
+  height:100%;
+  display:block;
 }
