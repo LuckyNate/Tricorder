@@ -6,17 +6,14 @@
 }
 
 #viewPane.mode-3d #minimapViewport {
-  left:10px;
-  right:auto;
-  top:auto;
-  bottom:10px;
-  width:min(34%,180px);
-  aspect-ratio:1 / 1;
-  z-index:260;
-  border:1px solid #5ba983;
-  border-radius:8px;
-  background:#07110ddd;
-  box-shadow:0 0 14px #0009;
+  inset:0;
+  width:auto;
+  aspect-ratio:auto;
+  z-index:10;
+  border:0;
+  border-radius:0;
+  background:#07110d;
+  box-shadow:none;
 }
 
 #viewPane.mode-3d #mapRotator {
@@ -42,16 +39,11 @@
 
 #threeDView {
   z-index:5;
+  pointer-events:none;
+  background:transparent !important;
 }
 
-.ar-ground-map {
-  z-index:20;
-}
-
-#spatialTargets {
-  z-index:40;
-}
-
-.spatial-horizon {
-  z-index:30;
+#threeDView[data-map-first="true"] #spatialCamera,
+#threeDView[data-map-first="true"] #spatialScene {
+  display:none !important;
 }
