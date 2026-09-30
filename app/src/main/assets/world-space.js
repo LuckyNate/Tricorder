@@ -156,9 +156,14 @@
 
     update(values = {}) {
       ['latitude', 'longitude', 'accuracy', 'altitude', 'verticalAccuracy', 'pitch', 'roll', 'displayRotation', 'declinationDegrees'].forEach(key => {
-        if (Number.isFinite(Number(values[key]))) this[key] = Number(values[key]);
+        const value = values[key];
+        if (value !== null && value !== undefined && Number.isFinite(Number(value))) {
+          this[key] = Number(value);
+        }
       });
-      if (Number.isFinite(Number(values.heading))) this.heading = wrapDegrees(values.heading);
+      if (values.heading !== null && values.heading !== undefined && Number.isFinite(Number(values.heading))) {
+        this.heading = wrapDegrees(values.heading);
+      }
       if (Array.isArray(values.rotationMatrix) && values.rotationMatrix.length === 9) {
         this.rotationMatrix = values.rotationMatrix.map(Number);
         this.orientation.setAndroidMatrix(this.rotationMatrix, this.displayRotation, this.declinationDegrees);
