@@ -55,8 +55,8 @@
 
     function showMappingStatus() {
       if (!sourceStatus) return;
-      const location = Number.isFinite(Number(pose.latitude)) && Number.isFinite(Number(pose.longitude));
-      const altitude = Number.isFinite(Number(pose.altitude));
+      const location = Number.isFinite(pose.latitude) && Number.isFinite(pose.longitude);
+      const altitude = Number.isFinite(pose.altitude);
       sourceStatus.textContent = `mapping · location ${location ? 'live' : 'waiting'} · altitude ${altitude ? `${pose.altitude.toFixed(1)} m` : 'waiting'} · orientation live`;
     }
 
