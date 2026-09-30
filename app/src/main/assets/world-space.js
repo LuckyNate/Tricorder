@@ -10,6 +10,10 @@
     return ((Number(value) % 360) + 360) % 360;
   }
 
+  function finite(value) {
+    return value !== null && value !== undefined && Number.isFinite(Number(value));
+  }
+
   function metersPerDegreeLng(latitude) {
     return METERS_PER_DEGREE_LAT * Math.cos(Number(latitude) * DEG);
   }
@@ -60,12 +64,10 @@
     }
 
     setAndroidMatrix(matrix, displayRotation = 0, declinationDegrees = 0) {
-      if (!Array.isArray(matrix) || matrix.length !== 9 || !matrix.every(value => Number.isFinite(Number(value)))) {
-        return false;
-      }
+      if (!Array.isArray(matrix) || matrix.length !== 9 || !matrix.every(finite)) return false;
       this.rawMatrix = matrix.map(Number);
       this.displayRotation = Number(displayRotation) || 0;
-      this.declinationDegrees = Number(declinationDegrees) || 0;
+      this.declinationDegrees = finite(declinationDegrees) ? Number(declinationDegrees) : 0;
       this.hasMatrix = true;
       return true;
     }
@@ -97,38 +99,26 @@
       return normalize(this.magneticWorldToTrueEnu(this.deviceToMagneticWorld(deviceVector)));
     }
 
-    screenRight() {
-      return this.worldVector(DeviceAxes.screenRight(this.displayRotation));
-    }
-
-    screenTop() {
-      return this.worldVector(DeviceAxes.screenTop(this.displayRotation));
-    }
-
-    cameraForward() {
-      return this.worldVector(DeviceAxes.rearCameraForward());
-    }
-
     cameraBasis() {
       return {
-        right: this.screenRight(),
-        up: this.screenTop(),
-        forward: this.cameraForward()
+        right: this.worldVector(DeviceAxes.screenRight(this.displayRotation)),
+        up: this.worldVector(DeviceAxes.screenTop(this.displayRotation)),
+        forward: this.worldVector(DeviceAxes.rearCameraForward())
       };
     }
 
     mapHeadingDegrees(fallbackHeading = 0) {
       if (!this.hasMatrix) return wrapDegrees(fallbackHeading);
-      const top = this.screenTop();
-      const horizontal = Math.hypot(top.east, top.north);
-      if (horizontal < 0.05) return wrapDegrees(fallbackHeading);
+      const forward = this.cameraBasis().forward;
+      const horizontal = Math.hypot(forward.east, forward.north);
+      if (horizontal >= 0.05) return wrapDegrees(Math.atan2(forward.east, forward.north) / DEG);
+      const top = this.cameraBasis().up;
       return wrapDegrees(Math.atan2(top.east, top.north) / DEG);
     }
 
     cameraElevationDegrees(fallbackPitch = 0) {
       if (!this.hasMatrix) return -Number(fallbackPitch || 0);
-      const forward = this.cameraForward();
-      return Math.asin(clamp(forward.up, -1, 1)) / DEG;
+      return Math.asin(clamp(this.cameraBasis().forward.up, -1, 1)) / DEG;
     }
 
     cameraRollDegrees(fallbackRoll = 0) {
@@ -156,33 +146,32 @@
 
     update(values = {}) {
       ['latitude', 'longitude', 'accuracy', 'altitude', 'verticalAccuracy', 'pitch', 'roll', 'displayRotation', 'declinationDegrees'].forEach(key => {
-        const value = values[key];
-        if (value !== null && value !== undefined && Number.isFinite(Number(value))) {
-          this[key] = Number(value);
-        }
+        if (finite(values[key])) this[key] = Number(values[key]);
       });
-      if (values.heading !== null && values.heading !== undefined && Number.isFinite(Number(values.heading))) {
-        this.heading = wrapDegrees(values.heading);
-      }
-      if (Array.isArray(values.rotationMatrix) && values.rotationMatrix.length === 9) {
+      if (finite(values.heading)) this.heading = wrapDegrees(values.heading);
+      if (Array.isArray(values.rotationMatrix) && values.rotationMatrix.length === 9 && values.rotationMatrix.every(finite)) {
         this.rotationMatrix = values.rotationMatrix.map(Number);
-        this.orientation.setAndroidMatrix(this.rotationMatrix, this.displayRotation, this.declinationDegrees);
-      } else if (this.rotationMatrix) {
+      }
+      if (this.rotationMatrix) {
         this.orientation.setAndroidMatrix(this.rotationMatrix, this.displayRotation, this.declinationDegrees);
       }
       return this;
     }
 
     hasLocation() {
-      return Number.isFinite(this.latitude) && Number.isFinite(this.longitude);
+      return finite(this.latitude) && finite(this.longitude);
+    }
+
+    hasAltitude() {
+      return finite(this.altitude);
     }
   }
 
   class WorldVector3 {
     constructor({ east = 0, north = 0, up = 0, horizontalUncertainty = 1, verticalUncertainty = 1 } = {}) {
-      this.east = Number(east) || 0;
-      this.north = Number(north) || 0;
-      this.up = Number(up) || 0;
+      this.east = Number(east);
+      this.north = Number(north);
+      this.up = Number(up);
       this.horizontalDistance = Math.hypot(this.east, this.north);
       this.distance = Math.hypot(this.horizontalDistance, this.up);
       this.bearing = wrapDegrees(Math.atan2(this.east, this.north) / DEG);
@@ -194,7 +183,7 @@
 
   class VerticalEstimator {
     estimate(target, pose, horizontalDistance, rangeMeters) {
-      if (target.position && Number.isFinite(Number(target.position.altitude))) {
+      if (target.position && finite(target.position.altitude)) {
         return {
           altitude: Number(target.position.altitude),
           uncertainty: Math.max(2, Number(target.uncertaintyMeters) || 5),
@@ -205,12 +194,12 @@
       const baseUncertainty = Math.max(
         3,
         Number(target.uncertaintyMeters) || 5,
-        Number(pose.verticalAccuracy) || 0,
+        finite(pose.verticalAccuracy) ? Number(pose.verticalAccuracy) : 0,
         Math.min(Number(rangeMeters) || 20, Math.max(3, horizontalDistance * 0.5))
       );
 
       return {
-        altitude: Number.isFinite(pose.altitude) ? pose.altitude : null,
+        altitude: pose.hasAltitude() ? pose.altitude : null,
         uncertainty: baseUncertainty,
         confidence: 0
       };
@@ -248,11 +237,10 @@
     relative(vector, pose) {
       if (pose.orientation.hasMatrix) {
         const basis = pose.orientation.cameraBasis();
-        const world = { east: vector.east, north: vector.north, up: vector.up };
         return {
-          x: dot(world, basis.right),
-          y: dot(world, basis.up),
-          z: dot(world, basis.forward)
+          x: dot(vector, basis.right),
+          y: dot(vector, basis.up),
+          z: dot(vector, basis.forward)
         };
       }
 
@@ -274,7 +262,7 @@
 
     project(vector, pose, projection) {
       const camera = this.relative(vector, pose);
-      if (camera.z <= 0.05) return null;
+      if (!finite(camera.x) || !finite(camera.y) || !finite(camera.z) || camera.z <= 0.05) return null;
       return {
         x: projection.width * 0.5 + (camera.x / camera.z) * projection.focalX,
         y: projection.height * 0.5 - (camera.y / camera.z) * projection.focalY,
@@ -318,15 +306,27 @@
     }
 
     horizontalOffset(position) {
-      if (!this.pose.hasLocation() || !position) return null;
+      if (!this.pose.hasLocation() || !position || !finite(position.latitude) || !finite(position.longitude)) return null;
       const latitude = Number(position.latitude);
       const longitude = Number(position.longitude);
-      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
-      const meanLat = (this.pose.latitude + latitude) * 0.5;
+      const meanLatitude = (this.pose.latitude + latitude) * 0.5;
       return {
-        east: (longitude - this.pose.longitude) * metersPerDegreeLng(meanLat),
+        east: (longitude - this.pose.longitude) * metersPerDegreeLng(meanLatitude),
         north: (latitude - this.pose.latitude) * METERS_PER_DEGREE_LAT
       };
+    }
+
+    geographicVector(position) {
+      if (!this.pose.hasLocation() || !this.pose.hasAltitude() || !position || !finite(position.altitude)) return null;
+      const horizontal = this.horizontalOffset(position);
+      if (!horizontal) return null;
+      return new WorldVector3({
+        east: horizontal.east,
+        north: horizontal.north,
+        up: Number(position.altitude) - Number(this.pose.altitude),
+        horizontalUncertainty: 1,
+        verticalUncertainty: 1
+      });
     }
 
     resolveTarget(target) {
@@ -334,10 +334,12 @@
       const horizontal = this.horizontalOffset(target.position);
       if (!horizontal) return null;
       const horizontalDistance = Math.hypot(horizontal.east, horizontal.north);
-      const verticalCandidate = this.verticalEstimator.estimate(target, this.pose, horizontalDistance, this.rangeMeters);
-      const vertical = this.verticalEstimator.best(target, verticalCandidate);
-      const up = Number.isFinite(vertical.altitude) && Number.isFinite(this.pose.altitude)
-        ? vertical.altitude - this.pose.altitude
+      const vertical = this.verticalEstimator.best(
+        target,
+        this.verticalEstimator.estimate(target, this.pose, horizontalDistance, this.rangeMeters)
+      );
+      const up = finite(vertical.altitude) && this.pose.hasAltitude()
+        ? Number(vertical.altitude) - Number(this.pose.altitude)
         : 0;
       const vector = new WorldVector3({
         east: horizontal.east,
@@ -393,6 +395,7 @@
     CameraProjector,
     WorldSpaceModel,
     clamp,
-    wrapDegrees
+    wrapDegrees,
+    finite
   };
 })();
