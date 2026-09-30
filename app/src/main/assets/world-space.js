@@ -19,16 +19,16 @@
   }
 
   function normalize(vector) {
-    const length = Math.hypot(vector.east, vector.north, vector.up) || 1;
+    const length = Math.hypot(vector.x, vector.y, vector.z) || 1;
     return {
-      east: vector.east / length,
-      north: vector.north / length,
-      up: vector.up / length
+      x: vector.x / length,
+      y: vector.y / length,
+      z: vector.z / length
     };
   }
 
   function dot(a, b) {
-    return a.east * b.east + a.north * b.north + a.up * b.up;
+    return a.x * b.x + a.y * b.y + a.z * b.z;
   }
 
   class DeviceAxes {
@@ -72,31 +72,32 @@
       return true;
     }
 
+    // Android world axes are east, north, up. Convert once at the boundary
+    // into Tricorder world axes: X=east/right, Y=up, Z=north/forward.
     deviceToMagneticWorld(deviceVector) {
       const m = this.rawMatrix;
-      const x = Number(deviceVector.x) || 0;
-      const y = Number(deviceVector.y) || 0;
-      const z = Number(deviceVector.z) || 0;
-      return {
-        east: m[0] * x + m[1] * y + m[2] * z,
-        north: m[3] * x + m[4] * y + m[5] * z,
-        up: m[6] * x + m[7] * y + m[8] * z
-      };
+      const dx = Number(deviceVector.x) || 0;
+      const dy = Number(deviceVector.y) || 0;
+      const dz = Number(deviceVector.z) || 0;
+      const east = m[0] * dx + m[1] * dy + m[2] * dz;
+      const north = m[3] * dx + m[4] * dy + m[5] * dz;
+      const up = m[6] * dx + m[7] * dy + m[8] * dz;
+      return { x: east, y: up, z: north };
     }
 
-    magneticWorldToTrueEnu(vector) {
+    magneticWorldToTrueWorld(vector) {
       const angle = this.declinationDegrees * DEG;
       const cos = Math.cos(angle);
       const sin = Math.sin(angle);
       return {
-        east: vector.east * cos + vector.north * sin,
-        north: -vector.east * sin + vector.north * cos,
-        up: vector.up
+        x: vector.x * cos + vector.z * sin,
+        y: vector.y,
+        z: -vector.x * sin + vector.z * cos
       };
     }
 
     worldVector(deviceVector) {
-      return normalize(this.magneticWorldToTrueEnu(this.deviceToMagneticWorld(deviceVector)));
+      return normalize(this.magneticWorldToTrueWorld(this.deviceToMagneticWorld(deviceVector)));
     }
 
     cameraBasis() {
@@ -109,22 +110,22 @@
 
     mapHeadingDegrees(fallbackHeading = 0) {
       if (!this.hasMatrix) return wrapDegrees(fallbackHeading);
-      const forward = this.cameraBasis().forward;
-      const horizontal = Math.hypot(forward.east, forward.north);
-      if (horizontal >= 0.05) return wrapDegrees(Math.atan2(forward.east, forward.north) / DEG);
-      const top = this.cameraBasis().up;
-      return wrapDegrees(Math.atan2(top.east, top.north) / DEG);
+      const basis = this.cameraBasis();
+      const forward = basis.forward;
+      const horizontal = Math.hypot(forward.x, forward.z);
+      if (horizontal >= 0.05) return wrapDegrees(Math.atan2(forward.x, forward.z) / DEG);
+      return wrapDegrees(Math.atan2(basis.up.x, basis.up.z) / DEG);
     }
 
     cameraElevationDegrees(fallbackPitch = 0) {
       if (!this.hasMatrix) return -Number(fallbackPitch || 0);
-      return Math.asin(clamp(this.cameraBasis().forward.up, -1, 1)) / DEG;
+      return Math.asin(clamp(this.cameraBasis().forward.y, -1, 1)) / DEG;
     }
 
     cameraRollDegrees(fallbackRoll = 0) {
       if (!this.hasMatrix) return Number(fallbackRoll || 0);
       const basis = this.cameraBasis();
-      return Math.atan2(-basis.right.up, basis.up.up) / DEG;
+      return Math.atan2(-basis.right.y, basis.up.y) / DEG;
     }
   }
 
@@ -168,14 +169,14 @@
   }
 
   class WorldVector3 {
-    constructor({ east = 0, north = 0, up = 0, horizontalUncertainty = 1, verticalUncertainty = 1 } = {}) {
-      this.east = Number(east);
-      this.north = Number(north);
-      this.up = Number(up);
-      this.horizontalDistance = Math.hypot(this.east, this.north);
-      this.distance = Math.hypot(this.horizontalDistance, this.up);
-      this.bearing = wrapDegrees(Math.atan2(this.east, this.north) / DEG);
-      this.elevation = Math.atan2(this.up, Math.max(0.001, this.horizontalDistance)) / DEG;
+    constructor({ x = 0, y = 0, z = 0, horizontalUncertainty = 1, verticalUncertainty = 1 } = {}) {
+      this.x = Number(x);
+      this.y = Number(y);
+      this.z = Number(z);
+      this.horizontalDistance = Math.hypot(this.x, this.z);
+      this.distance = Math.hypot(this.horizontalDistance, this.y);
+      this.bearing = wrapDegrees(Math.atan2(this.x, this.z) / DEG);
+      this.elevation = Math.atan2(this.y, Math.max(0.001, this.horizontalDistance)) / DEG;
       this.horizontalUncertainty = Math.max(1, Number(horizontalUncertainty) || 1);
       this.verticalUncertainty = Math.max(1, Number(verticalUncertainty) || 1);
     }
@@ -215,8 +216,8 @@
     project(vector, metersPerPixel, width, height) {
       const scale = Math.max(0.0001, Number(metersPerPixel) || 1);
       return {
-        x: width * 0.5 + vector.east / scale,
-        y: height * 0.5 - vector.north / scale
+        x: width * 0.5 + vector.x / scale,
+        y: height * 0.5 - vector.z / scale
       };
     }
 
@@ -311,8 +312,8 @@
       const longitude = Number(position.longitude);
       const meanLatitude = (this.pose.latitude + latitude) * 0.5;
       return {
-        east: (longitude - this.pose.longitude) * metersPerDegreeLng(meanLatitude),
-        north: (latitude - this.pose.latitude) * METERS_PER_DEGREE_LAT
+        x: (longitude - this.pose.longitude) * metersPerDegreeLng(meanLatitude),
+        z: (latitude - this.pose.latitude) * METERS_PER_DEGREE_LAT
       };
     }
 
@@ -321,9 +322,9 @@
       const horizontal = this.horizontalOffset(position);
       if (!horizontal) return null;
       return new WorldVector3({
-        east: horizontal.east,
-        north: horizontal.north,
-        up: Number(position.altitude) - Number(this.pose.altitude),
+        x: horizontal.x,
+        y: Number(position.altitude) - Number(this.pose.altitude),
+        z: horizontal.z,
         horizontalUncertainty: 1,
         verticalUncertainty: 1
       });
@@ -333,26 +334,26 @@
       if (!target || !target.position || !this.pose.hasLocation()) return null;
       const horizontal = this.horizontalOffset(target.position);
       if (!horizontal) return null;
-      const horizontalDistance = Math.hypot(horizontal.east, horizontal.north);
+      const horizontalDistance = Math.hypot(horizontal.x, horizontal.z);
       const vertical = this.verticalEstimator.best(
         target,
         this.verticalEstimator.estimate(target, this.pose, horizontalDistance, this.rangeMeters)
       );
-      const up = finite(vertical.altitude) && this.pose.hasAltitude()
+      const y = finite(vertical.altitude) && this.pose.hasAltitude()
         ? Number(vertical.altitude) - Number(this.pose.altitude)
         : 0;
       const vector = new WorldVector3({
-        east: horizontal.east,
-        north: horizontal.north,
-        up,
+        x: horizontal.x,
+        y,
+        z: horizontal.z,
         horizontalUncertainty: Number(target.uncertaintyMeters) || 5,
         verticalUncertainty: vertical.uncertainty || Number(target.uncertaintyMeters) || 5
       });
 
       target.spatial = {
-        east: vector.east,
-        north: vector.north,
-        up: vector.up,
+        x: vector.x,
+        y: vector.y,
+        z: vector.z,
         altitude: vertical.altitude,
         bearing: vector.bearing,
         elevation: vector.elevation,
