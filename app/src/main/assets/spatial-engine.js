@@ -8,29 +8,7 @@
   const DEG = Math.PI / 180;
   const FRAME_INTERVAL_MS = 1000 / 30;
   const DEFAULT_HORIZONTAL_FOV_DEGREES = 70;
-
-  function featureKey(layer) {
-    return `${layer && layer.id || ''} ${layer && layer['source-layer'] || ''}`.toLowerCase();
-  }
-
-  function featureKind(layer) {
-    const key = featureKey(layer);
-    if (key.includes('rail')) return 'rail';
-    if (key.includes('water')) return 'water';
-    if (/(road|street|transport|highway|bridge|tunnel|path)/.test(key)) return 'road';
-    return 'map';
-  }
-
-  function geometryLines(geometry) {
-    if (!geometry || !Array.isArray(geometry.coordinates)) return [];
-    switch (geometry.type) {
-      case 'LineString': return [geometry.coordinates];
-      case 'MultiLineString': return geometry.coordinates;
-      case 'Polygon': return geometry.coordinates;
-      case 'MultiPolygon': return geometry.coordinates.flat();
-      default: return [];
-    }
-  }
+  const GROUND_GRID = 12;
 
   class SharedRadarView extends BaseRadarView {
     constructor(world = new WorldSpaceModel()) {
@@ -68,96 +46,77 @@
     }
   }
 
-  class MapGeometrySource {
+  function affineFromTriangles(source, destination) {
+    const [s0, s1, s2] = source;
+    const [d0, d1, d2] = destination;
+    const denominator = s0.x * (s1.y - s2.y) + s1.x * (s2.y - s0.y) + s2.x * (s0.y - s1.y);
+    if (Math.abs(denominator) < 1e-6) return null;
+
+    const a = (d0.x * (s1.y - s2.y) + d1.x * (s2.y - s0.y) + d2.x * (s0.y - s1.y)) / denominator;
+    const c = (d0.x * (s2.x - s1.x) + d1.x * (s0.x - s2.x) + d2.x * (s1.x - s0.x)) / denominator;
+    const e = (d0.x * (s1.x * s2.y - s2.x * s1.y) + d1.x * (s2.x * s0.y - s0.x * s2.y) + d2.x * (s0.x * s1.y - s1.x * s0.y)) / denominator;
+
+    const b = (d0.y * (s1.y - s2.y) + d1.y * (s2.y - s0.y) + d2.y * (s0.y - s1.y)) / denominator;
+    const d = (d0.y * (s2.x - s1.x) + d1.y * (s0.x - s2.x) + d2.y * (s1.x - s0.x)) / denominator;
+    const f = (d0.y * (s1.x * s2.y - s2.x * s1.y) + d1.y * (s2.x * s0.y - s0.x * s2.y) + d2.y * (s0.x * s1.y - s1.x * s0.y)) / denominator;
+
+    return { a, b, c, d, e, f };
+  }
+
+  function drawTexturedTriangle(context, texture, source, destination) {
+    if (destination.some(point => !point)) return;
+    const transform = affineFromTriangles(source, destination);
+    if (!transform) return;
+
+    context.save();
+    context.beginPath();
+    context.moveTo(destination[0].x, destination[0].y);
+    context.lineTo(destination[1].x, destination[1].y);
+    context.lineTo(destination[2].x, destination[2].y);
+    context.closePath();
+    context.clip();
+    context.setTransform(transform.a, transform.b, transform.c, transform.d, transform.e, transform.f);
+    context.drawImage(texture, 0, 0);
+    context.restore();
+  }
+
+  class GroundMapSource {
     constructor(radar) {
       this.radar = radar;
-      this.features = [];
-      this.lastRefreshAt = 0;
     }
 
     map() {
       return this.radar && this.radar.referenceOverlayMap;
     }
 
-    refresh(force = false) {
+    ready() {
+      return Boolean(this.map() && this.radar.referenceOverlayReady);
+    }
+
+    sync() {
+      if (typeof this.radar.syncReferenceOverlay === 'function') this.radar.syncReferenceOverlay();
+    }
+
+    canvas() {
       const map = this.map();
-      if (!map || !this.radar.referenceOverlayReady) {
-        this.features = [];
-        return;
+      return map && typeof map.getCanvas === 'function' ? map.getCanvas() : null;
+    }
+
+    geographicAt(cssX, cssY) {
+      const map = this.map();
+      if (!map || typeof map.unproject !== 'function') return null;
+      try {
+        const position = map.unproject([cssX, cssY]);
+        if (!position || !finite(position.lat) || !finite(position.lng)) return null;
+        return { latitude: Number(position.lat), longitude: Number(position.lng) };
+      } catch (_) {
+        return null;
       }
-
-      const now = Date.now();
-      if (!force && now - this.lastRefreshAt < 250) return;
-      this.lastRefreshAt = now;
-
-      if (typeof this.radar.syncReferenceOverlay === 'function') {
-        this.radar.syncReferenceOverlay();
-      }
-
-      const style = map.getStyle && map.getStyle();
-      const layers = style && Array.isArray(style.layers) ? style.layers : [];
-      const zoom = typeof map.getZoom === 'function' ? map.getZoom() : 0;
-      const next = [];
-      const seen = new Set();
-
-      layers.forEach(layer => {
-        if (!layer || layer.type !== 'line' || !layer.source) return;
-        if (typeof map.getLayoutProperty === 'function' && map.getLayoutProperty(layer.id, 'visibility') === 'none') return;
-        if (finite(layer.minzoom) && zoom < Number(layer.minzoom)) return;
-        if (finite(layer.maxzoom) && zoom >= Number(layer.maxzoom)) return;
-
-        const options = {};
-        if (layer['source-layer']) options.sourceLayer = layer['source-layer'];
-        if (layer.filter) options.filter = layer.filter;
-
-        let sourceFeatures = [];
-        try {
-          sourceFeatures = map.querySourceFeatures(layer.source, options) || [];
-        } catch (_) {
-          return;
-        }
-
-        sourceFeatures.forEach((feature, featureIndex) => {
-          geometryLines(feature && feature.geometry).forEach((line, lineIndex) => {
-            if (!Array.isArray(line) || line.length < 2) return;
-
-            const points = line.map(coordinate => ({
-              longitude: Number(coordinate && coordinate[0]),
-              latitude: Number(coordinate && coordinate[1])
-            })).filter(point => finite(point.longitude) && finite(point.latitude));
-            if (points.length < 2) return;
-
-            const first = points[0];
-            const last = points[points.length - 1];
-            const id = [
-              layer.source,
-              layer['source-layer'] || '',
-              feature && feature.id != null ? feature.id : featureIndex,
-              lineIndex,
-              first.longitude.toFixed(6),
-              first.latitude.toFixed(6),
-              last.longitude.toFixed(6),
-              last.latitude.toFixed(6)
-            ].join(':');
-            if (seen.has(id)) return;
-            seen.add(id);
-
-            next.push({
-              id,
-              kind: featureKind(layer),
-              name: feature && feature.properties && (feature.properties.name || feature.properties.ref) || '',
-              points
-            });
-          });
-        });
-      });
-
-      this.features = next;
     }
 
     elevationAt(position) {
       const map = this.map();
-      if (!map || !this.radar.referenceOverlayReady || typeof map.queryTerrainElevation !== 'function') return null;
+      if (!map || !this.ready() || typeof map.queryTerrainElevation !== 'function') return null;
       try {
         const elevation = map.queryTerrainElevation([position.longitude, position.latitude]);
         return finite(elevation) ? Number(elevation) : null;
@@ -182,7 +141,7 @@
       this.cameraStarting = false;
       this.cameraHorizontalFov = DEFAULT_HORIZONTAL_FOV_DEGREES;
       this.lastRenderAt = 0;
-      this.mapSource = new MapGeometrySource(radar);
+      this.mapSource = new GroundMapSource(radar);
       this.initScene();
     }
 
@@ -190,9 +149,10 @@
       if (!this.scene) return;
       this.scene.replaceChildren();
 
-      this.groundSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-      this.groundSvg.classList.add('ar-ground-map');
-      this.groundSvg.setAttribute('aria-hidden', 'true');
+      this.groundCanvas = document.createElement('canvas');
+      this.groundCanvas.className = 'ar-ground-map';
+      this.groundCanvas.setAttribute('aria-hidden', 'true');
+      this.groundContext = this.groundCanvas.getContext('2d');
 
       const reticle = document.createElement('div');
       reticle.className = 'spatial-reticle';
@@ -218,7 +178,7 @@
       cameraReadout.textContent = 'CAM OFF';
       this.cameraLabel = cameraReadout;
 
-      this.scene.append(this.groundSvg, reticle, headingReadout, pitchReadout, rangeReadout, cameraReadout);
+      this.scene.append(this.groundCanvas, reticle, headingReadout, pitchReadout, rangeReadout, cameraReadout);
     }
 
     setActive(active) {
@@ -312,62 +272,85 @@
       };
     }
 
-    groundVector(position) {
-      const groundAltitude = this.mapSource.elevationAt(position);
-      if (!finite(groundAltitude)) return null;
-      return this.world.geographicVector({
-        latitude: position.latitude,
-        longitude: position.longitude,
-        altitude: groundAltitude
+    meshVertex(u, v, texture, projection) {
+      const cssWidth = texture.clientWidth || texture.width;
+      const cssHeight = texture.clientHeight || texture.height;
+      if (!cssWidth || !cssHeight || !texture.width || !texture.height) return null;
+
+      const geographic = this.mapSource.geographicAt(u * cssWidth, v * cssHeight);
+      if (!geographic) return null;
+      const elevation = this.mapSource.elevationAt(geographic);
+      if (!finite(elevation)) return null;
+
+      const vector = this.world.geographicVector({
+        latitude: geographic.latitude,
+        longitude: geographic.longitude,
+        altitude: elevation
       });
+      if (!vector) return null;
+
+      const point = this.world.camera.project(vector, this.world.pose, projection);
+      if (!point) return null;
+
+      return {
+        source: { x: u * texture.width, y: v * texture.height },
+        destination: { x: point.x, y: point.y },
+        vector
+      };
     }
 
     renderGroundMap(projection) {
-      if (!this.groundSvg) return;
-      if (!this.world.pose.hasLocation() || !this.world.pose.hasAltitude()) {
-        this.groundSvg.replaceChildren();
-        return;
+      if (!this.groundCanvas || !this.groundContext) return;
+
+      const width = Math.max(1, Math.round(projection.width));
+      const height = Math.max(1, Math.round(projection.height));
+      if (this.groundCanvas.width !== width || this.groundCanvas.height !== height) {
+        this.groundCanvas.width = width;
+        this.groundCanvas.height = height;
+      }
+      this.groundContext.setTransform(1, 0, 0, 1, 0, 0);
+      this.groundContext.clearRect(0, 0, width, height);
+
+      if (!this.world.pose.hasLocation() || !this.world.pose.hasAltitude() || !this.mapSource.ready()) return;
+
+      this.mapSource.sync();
+      const texture = this.mapSource.canvas();
+      if (!texture || !texture.width || !texture.height) return;
+
+      const vertices = [];
+      for (let row = 0; row <= GROUND_GRID; row += 1) {
+        const line = [];
+        for (let column = 0; column <= GROUND_GRID; column += 1) {
+          line.push(this.meshVertex(column / GROUND_GRID, row / GROUND_GRID, texture, projection));
+        }
+        vertices.push(line);
       }
 
-      this.mapSource.refresh();
-      this.groundSvg.setAttribute('viewBox', `0 0 ${projection.width} ${projection.height}`);
-      this.groundSvg.setAttribute('width', String(projection.width));
-      this.groundSvg.setAttribute('height', String(projection.height));
-      this.groundSvg.replaceChildren();
+      for (let row = 0; row < GROUND_GRID; row += 1) {
+        for (let column = 0; column < GROUND_GRID; column += 1) {
+          const topLeft = vertices[row][column];
+          const topRight = vertices[row][column + 1];
+          const bottomLeft = vertices[row + 1][column];
+          const bottomRight = vertices[row + 1][column + 1];
 
-      const maxDistance = Math.max(30, this.rangeMeters * 1.75);
-      this.mapSource.features.forEach(feature => {
-        let segment = [];
-        const flush = () => {
-          if (segment.length >= 2) {
-            const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-            path.setAttribute('d', segment.map((point, index) => `${index ? 'L' : 'M'}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(' '));
-            path.setAttribute('class', `ar-ground-map-line ar-ground-map-${feature.kind || 'map'}`);
-            if (feature.name) path.setAttribute('data-name', feature.name);
-            this.groundSvg.appendChild(path);
+          if (topLeft && bottomLeft && topRight) {
+            drawTexturedTriangle(
+              this.groundContext,
+              texture,
+              [topLeft.source, bottomLeft.source, topRight.source],
+              [topLeft.destination, bottomLeft.destination, topRight.destination]
+            );
           }
-          segment = [];
-        };
-
-        feature.points.forEach(position => {
-          const vector = this.groundVector(position);
-          if (!vector || vector.horizontalDistance > maxDistance) {
-            flush();
-            return;
+          if (topRight && bottomLeft && bottomRight) {
+            drawTexturedTriangle(
+              this.groundContext,
+              texture,
+              [topRight.source, bottomLeft.source, bottomRight.source],
+              [topRight.destination, bottomLeft.destination, bottomRight.destination]
+            );
           }
-
-          const point = this.world.camera.project(vector, this.world.pose, projection);
-          if (!point ||
-              point.x < -projection.width || point.x > projection.width * 2 ||
-              point.y < -projection.height || point.y > projection.height * 2) {
-            flush();
-            return;
-          }
-
-          segment.push(point);
-        });
-        flush();
-      });
+        }
+      }
     }
 
     render(_engine, now = performance.now()) {
