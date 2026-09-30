@@ -80,15 +80,26 @@
         if (!this.referenceOverlayMap.getSource(TERRAIN_SOURCE_ID)) {
           this.referenceOverlayMap.addSource(TERRAIN_SOURCE_ID, {
             type: 'raster-dem',
-            url: TERRAIN_SOURCE_URL,
-            tileSize: 256
+            url: TERRAIN_SOURCE_URL
           });
         }
         this.referenceOverlayMap.setTerrain({ source: TERRAIN_SOURCE_ID, exaggeration: 1 });
 
-        this.referenceOverlayReady = true;
-        overlay.style.opacity = '1';
-        this.syncReferenceOverlay();
+        const markTerrainReady = () => {
+          if (this.referenceOverlayReady) return;
+          this.referenceOverlayReady = true;
+          overlay.style.opacity = '1';
+          this.syncReferenceOverlay();
+        };
+
+        this.referenceOverlayMap.on('sourcedata', event => {
+          if (event.sourceId !== TERRAIN_SOURCE_ID || !event.isSourceLoaded) return;
+          markTerrainReady();
+        });
+
+        try {
+          if (this.referenceOverlayMap.isSourceLoaded(TERRAIN_SOURCE_ID)) markTerrainReady();
+        } catch (_) {}
       });
     }
 
