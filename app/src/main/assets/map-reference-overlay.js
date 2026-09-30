@@ -6,25 +6,6 @@
   const TERRAIN_SOURCE_ID = 'tricorder-terrain';
   const TERRAIN_SOURCE_URL = 'https://tiles.mapterhorn.com/tilejson.json';
 
-  function layerKey(layer) {
-    return `${layer.id || ''} ${layer['source-layer'] || ''}`.toLowerCase();
-  }
-
-  function keepReferenceLayer(layer) {
-    const key = layerKey(layer);
-    if (key.includes('building') || key.includes('housenumber') || key.includes('poi')) return false;
-
-    if (layer.type === 'line') {
-      return /(road|street|transport|highway|bridge|tunnel|boundary|path|rail)/.test(key);
-    }
-
-    if (layer.type === 'symbol') {
-      return /(road|street|transport|highway)/.test(key);
-    }
-
-    return false;
-  }
-
   class ReferenceOverlayRadarView extends BaseRadarView {
     constructor(...args) {
       super(...args);
@@ -53,30 +34,11 @@
         pitchWithRotate: false,
         dragRotate: false,
         touchPitch: false,
-        fadeDuration: 0
+        fadeDuration: 0,
+        preserveDrawingBuffer: true
       });
 
       this.referenceOverlayMap.on('load', () => {
-        const style = this.referenceOverlayMap.getStyle();
-        (style.layers || []).forEach(layer => {
-          if (!keepReferenceLayer(layer)) {
-            this.referenceOverlayMap.setLayoutProperty(layer.id, 'visibility', 'none');
-            return;
-          }
-
-          if (layer.type === 'line') {
-            this.referenceOverlayMap.setPaintProperty(layer.id, 'line-color', '#e8fff2');
-            this.referenceOverlayMap.setPaintProperty(layer.id, 'line-opacity', 0.72);
-          }
-
-          if (layer.type === 'symbol') {
-            try { this.referenceOverlayMap.setPaintProperty(layer.id, 'icon-opacity', 0); } catch (_) {}
-            try { this.referenceOverlayMap.setPaintProperty(layer.id, 'text-color', '#ffffff'); } catch (_) {}
-            try { this.referenceOverlayMap.setPaintProperty(layer.id, 'text-halo-color', '#07110d'); } catch (_) {}
-            try { this.referenceOverlayMap.setPaintProperty(layer.id, 'text-halo-width', 1.5); } catch (_) {}
-          }
-        });
-
         if (!this.referenceOverlayMap.getSource(TERRAIN_SOURCE_ID)) {
           this.referenceOverlayMap.addSource(TERRAIN_SOURCE_ID, {
             type: 'raster-dem',
@@ -88,7 +50,6 @@
         const markTerrainReady = () => {
           if (this.referenceOverlayReady) return;
           this.referenceOverlayReady = true;
-          overlay.style.opacity = '1';
           this.syncReferenceOverlay();
         };
 
