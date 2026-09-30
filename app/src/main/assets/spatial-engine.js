@@ -4,7 +4,7 @@
   }
 
   const BaseRadarView = window.ScannerCore.RadarView;
-  const { WorldSpaceModel, WorldVector3, wrapDegrees } = window.WorldSpace;
+  const { WorldSpaceModel, wrapDegrees, finite } = window.WorldSpace;
   const DEG = Math.PI / 180;
   const FRAME_INTERVAL_MS = 1000 / 30;
   const DEFAULT_HORIZONTAL_FOV_DEGREES = 70;
@@ -45,7 +45,7 @@
     }
 
     setHeading(degrees) {
-      if (!Number.isFinite(Number(degrees))) return;
+      if (!finite(degrees)) return;
       this.heading = wrapDegrees(Number(degrees));
       this.world.setHeading(this.heading);
       if (this.rotatorEl) {
@@ -103,8 +103,8 @@
       layers.forEach(layer => {
         if (!layer || layer.type !== 'line' || !layer.source) return;
         if (typeof map.getLayoutProperty === 'function' && map.getLayoutProperty(layer.id, 'visibility') === 'none') return;
-        if (Number.isFinite(Number(layer.minzoom)) && zoom < Number(layer.minzoom)) return;
-        if (Number.isFinite(Number(layer.maxzoom)) && zoom >= Number(layer.maxzoom)) return;
+        if (finite(layer.minzoom) && zoom < Number(layer.minzoom)) return;
+        if (finite(layer.maxzoom) && zoom >= Number(layer.maxzoom)) return;
 
         const options = {};
         if (layer['source-layer']) options.sourceLayer = layer['source-layer'];
@@ -124,7 +124,7 @@
             const points = line.map(coordinate => ({
               longitude: Number(coordinate && coordinate[0]),
               latitude: Number(coordinate && coordinate[1])
-            })).filter(point => Number.isFinite(point.longitude) && Number.isFinite(point.latitude));
+            })).filter(point => finite(point.longitude) && finite(point.latitude));
             if (points.length < 2) return;
 
             const first = points[0];
@@ -160,7 +160,7 @@
       if (!map || !this.radar.referenceOverlayReady || typeof map.queryTerrainElevation !== 'function') return null;
       try {
         const elevation = map.queryTerrainElevation([position.longitude, position.latitude]);
-        return Number.isFinite(Number(elevation)) ? Number(elevation) : null;
+        return finite(elevation) ? Number(elevation) : null;
       } catch (_) {
         return null;
       }
@@ -279,7 +279,7 @@
     }
 
     setGravityVector() {
-      // Mapping rebuild uses the Android rotation matrix directly.
+      // World orientation comes directly from the Android rotation matrix.
     }
 
     setRange(meters) {
@@ -313,23 +313,18 @@
     }
 
     groundVector(position) {
-      if (!Number.isFinite(Number(this.world.pose.altitude))) return null;
-      const horizontal = this.world.horizontalOffset(position);
       const groundAltitude = this.mapSource.elevationAt(position);
-      if (!horizontal || !Number.isFinite(Number(groundAltitude))) return null;
-
-      return new WorldVector3({
-        east: horizontal.east,
-        north: horizontal.north,
-        up: Number(groundAltitude) - Number(this.world.pose.altitude),
-        horizontalUncertainty: 1,
-        verticalUncertainty: 1
+      if (!finite(groundAltitude)) return null;
+      return this.world.geographicVector({
+        latitude: position.latitude,
+        longitude: position.longitude,
+        altitude: groundAltitude
       });
     }
 
     renderGroundMap(projection) {
       if (!this.groundSvg) return;
-      if (!this.world.pose.hasLocation() || !Number.isFinite(Number(this.world.pose.altitude))) {
+      if (!this.world.pose.hasLocation() || !this.world.pose.hasAltitude()) {
         this.groundSvg.replaceChildren();
         return;
       }
