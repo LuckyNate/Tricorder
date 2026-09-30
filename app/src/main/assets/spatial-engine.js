@@ -272,31 +272,87 @@
       };
     }
 
-    meshVertex(u, v, texture, projection) {
+    meshSample(u, v, texture) {
       const cssWidth = texture.clientWidth || texture.width;
       const cssHeight = texture.clientHeight || texture.height;
       if (!cssWidth || !cssHeight || !texture.width || !texture.height) return null;
 
       const geographic = this.mapSource.geographicAt(u * cssWidth, v * cssHeight);
       if (!geographic) return null;
-      const elevation = this.mapSource.elevationAt(geographic);
-      if (!finite(elevation)) return null;
 
+      return {
+        source: { x: u * texture.width, y: v * texture.height },
+        geographic,
+        elevation: this.mapSource.elevationAt(geographic),
+        destination: null,
+        vector: null
+      };
+    }
+
+    fillHeightMap(samples) {
+      const valid = [];
+      samples.forEach((row, rowIndex) => row.forEach((sample, columnIndex) => {
+        if (sample && finite(sample.elevation)) {
+          valid.push({ row: rowIndex, column: columnIndex, elevation: Number(sample.elevation) });
+        }
+      }));
+      if (!valid.length) return false;
+
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (let row = 0; row < samples.length; row += 1) {
+          for (let column = 0; column < samples[row].length; column += 1) {
+            const sample = samples[row][column];
+            if (!sample || finite(sample.elevation)) continue;
+
+            const neighbors = [];
+            for (let dr = -1; dr <= 1; dr += 1) {
+              for (let dc = -1; dc <= 1; dc += 1) {
+                if (dr === 0 && dc === 0) continue;
+                const neighbor = samples[row + dr] && samples[row + dr][column + dc];
+                if (neighbor && finite(neighbor.elevation)) neighbors.push(Number(neighbor.elevation));
+              }
+            }
+            if (!neighbors.length) continue;
+            sample.elevation = neighbors.reduce((sum, value) => sum + value, 0) / neighbors.length;
+            changed = true;
+          }
+        }
+      }
+
+      samples.forEach((row, rowIndex) => row.forEach((sample, columnIndex) => {
+        if (!sample || finite(sample.elevation)) return;
+        let nearest = valid[0];
+        let nearestDistance = Infinity;
+        valid.forEach(candidate => {
+          const distance = Math.hypot(candidate.row - rowIndex, candidate.column - columnIndex);
+          if (distance < nearestDistance) {
+            nearestDistance = distance;
+            nearest = candidate;
+          }
+        });
+        sample.elevation = nearest.elevation;
+      }));
+
+      return true;
+    }
+
+    projectMeshSample(sample, projection) {
+      if (!sample || !finite(sample.elevation)) return null;
       const vector = this.world.geographicVector({
-        latitude: geographic.latitude,
-        longitude: geographic.longitude,
-        altitude: elevation
+        latitude: sample.geographic.latitude,
+        longitude: sample.geographic.longitude,
+        altitude: Number(sample.elevation)
       });
       if (!vector) return null;
 
       const point = this.world.camera.project(vector, this.world.pose, projection);
       if (!point) return null;
 
-      return {
-        source: { x: u * texture.width, y: v * texture.height },
-        destination: { x: point.x, y: point.y },
-        vector
-      };
+      sample.vector = vector;
+      sample.destination = { x: point.x, y: point.y };
+      return sample;
     }
 
     renderGroundMap(projection) {
@@ -317,14 +373,18 @@
       const texture = this.mapSource.canvas();
       if (!texture || !texture.width || !texture.height) return;
 
-      const vertices = [];
+      const samples = [];
       for (let row = 0; row <= GROUND_GRID; row += 1) {
         const line = [];
         for (let column = 0; column <= GROUND_GRID; column += 1) {
-          line.push(this.meshVertex(column / GROUND_GRID, row / GROUND_GRID, texture, projection));
+          line.push(this.meshSample(column / GROUND_GRID, row / GROUND_GRID, texture));
         }
-        vertices.push(line);
+        samples.push(line);
       }
+
+      if (!this.fillHeightMap(samples)) return;
+
+      const vertices = samples.map(row => row.map(sample => this.projectMeshSample(sample, projection)));
 
       for (let row = 0; row < GROUND_GRID; row += 1) {
         for (let column = 0; column < GROUND_GRID; column += 1) {
