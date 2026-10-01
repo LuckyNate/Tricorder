@@ -2,10 +2,34 @@
   const status = document.getElementById('status');
   const telemetry = document.getElementById('telemetry');
   const mapHost = document.getElementById('map');
+  const threeHost = document.getElementById('threeScene');
 
   function setStatus(message) {
     if (status) status.textContent = String(message || '');
   }
+
+  function fail(error) {
+    const message = error && error.message ? error.message : String(error || 'unknown error');
+    setStatus(`MAP FAULT: ${message}`);
+  }
+
+  if (!window.maplibregl || !window.THREE || !mapHost || !threeHost) {
+    fail('MapLibre/Three.js failed to load');
+    return;
+  }
+
+  let map = null;
+  let hasLocation = false;
+  let lastLocation = null;
+  let lastHeading = 0;
+  let pinchStartDistance = null;
+  let pinchStartZoom = null;
+
+  const CHASE_PITCH = 60;
+  const START_ZOOM = 18;
+  const MIN_ZOOM = 1;
+  const MAX_ZOOM = 19;
+  const PHONE_SCREEN_Y = 0.70;
 
   function setTelemetry() {
     if (!telemetry || !lastLocation || !map) return;
@@ -14,27 +38,24 @@
       Number.isFinite(lastLocation.accuracy) ? `GPS ±${Math.round(lastLocation.accuracy)} m` : '',
       Number.isFinite(lastLocation.altitude) ? `Altitude ${lastLocation.altitude.toFixed(1)} m` : '',
       `Heading ${lastHeading.toFixed(1)}°`,
-      `Zoom ${map.getZoom().toFixed(2)}`
+      `Zoom ${map.getZoom().toFixed(2)}`,
+      `Third-person pitch ${CHASE_PITCH.toFixed(0)}°`
     ].filter(Boolean).join('\n');
   }
 
-  function fail(error) {
-    const message = error && error.message ? error.message : String(error || 'unknown error');
-    setStatus(`MAP FAULT: ${message}`);
+  function applyChasePadding() {
+    if (!map) return;
+    const height = Math.max(1, mapHost.clientHeight || 1);
+    const top = Math.round(height * (PHONE_SCREEN_Y * 2 - 1));
+    map.setPadding({ top: Math.max(0, top), right: 0, bottom: 0, left: 0 });
   }
 
-  if (!window.maplibregl || !mapHost) {
-    fail('MapLibre failed to load');
-    return;
+  function syncChaseCamera() {
+    if (!map || !lastLocation) return;
+    map.setCenter([lastLocation.longitude, lastLocation.latitude]);
+    map.setBearing(lastHeading);
+    map.setPitch(CHASE_PITCH);
   }
-
-  let map = null;
-  let hasLocation = false;
-  let lastLocation = null;
-  let lastHeading = 0;
-
-  let pinchStartDistance = null;
-  let pinchStartZoom = null;
 
   function touchDistance(touches) {
     if (!touches || touches.length < 2) return null;
@@ -61,8 +82,7 @@
       if (!Number.isFinite(distance) || distance <= 0) return;
 
       const zoomDelta = Math.log2(distance / pinchStartDistance);
-      const zoom = Math.max(1, Math.min(19, pinchStartZoom + zoomDelta));
-      map.setZoom(zoom);
+      map.setZoom(Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, pinchStartZoom + zoomDelta)));
       setTelemetry();
       event.preventDefault();
     }, { passive: false });
@@ -78,13 +98,59 @@
     mapHost.addEventListener('touchcancel', endPinch, { passive: false });
   }
 
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
+  camera.position.set(0, 1.5, 5.2);
+  camera.lookAt(0, 0.35, 0);
+
+  const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setClearColor(0x000000, 0);
+  threeHost.replaceChildren(renderer.domElement);
+
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x303030, 1.4));
+  const keyLight = new THREE.DirectionalLight(0xffffff, 1.2);
+  keyLight.position.set(2, 4, 3);
+  scene.add(keyLight);
+
+  const phone = new THREE.Group();
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(0.82, 1.55, 0.18),
+    new THREE.MeshStandardMaterial({ color: 0x1a2421, roughness: 0.7, metalness: 0.2 })
+  );
+  const screen = new THREE.Mesh(
+    new THREE.BoxGeometry(0.68, 1.30, 0.03),
+    new THREE.MeshStandardMaterial({ color: 0x7dffb2, emissive: 0x173d2a, roughness: 0.35 })
+  );
+  screen.position.z = 0.105;
+  phone.add(body, screen);
+  phone.position.set(0, -1.15, 0);
+  phone.rotation.x = -0.12;
+  scene.add(phone);
+
+  function resizeThree() {
+    const width = Math.max(1, threeHost.clientWidth || 1);
+    const height = Math.max(1, threeHost.clientHeight || 1);
+    renderer.setSize(width, height, false);
+    camera.aspect = width / height;
+    camera.updateProjectionMatrix();
+  }
+
+  function renderThree() {
+    resizeThree();
+    renderer.render(scene, camera);
+    requestAnimationFrame(renderThree);
+  }
+  requestAnimationFrame(renderThree);
+
   try {
     map = new window.maplibregl.Map({
       container: mapHost,
       center: [0, 20],
       zoom: 1.5,
-      pitch: 0,
+      pitch: CHASE_PITCH,
       bearing: 0,
+      maxPitch: 85,
       interactive: false,
       attributionControl: true,
       fadeDuration: 0,
@@ -114,12 +180,33 @@
 
     map.on('load', () => {
       map.resize();
-      setStatus(hasLocation ? 'Map live' : 'Map live — waiting for GPS');
+      applyChasePadding();
+      syncChaseCamera();
+
+      try {
+        if (!map.getSource('tricorder-terrain')) {
+          map.addSource('tricorder-terrain', {
+            type: 'raster-dem',
+            url: 'https://tiles.mapterhorn.com/tilejson.json',
+            tileSize: 256
+          });
+          map.setTerrain({ source: 'tricorder-terrain', exaggeration: 1.0 });
+        }
+      } catch (_) {
+      }
+
+      setStatus(hasLocation ? 'Third-person map live' : 'Third-person map — waiting for GPS');
       setTelemetry();
     });
 
+    window.addEventListener('resize', () => {
+      map.resize();
+      applyChasePadding();
+      syncChaseCamera();
+    });
+
     map.on('error', event => {
-      if (event && event.error) fail(event.error);
+      if (event && event.error && !hasLocation) fail(event.error);
     });
   } catch (error) {
     fail(error);
@@ -142,11 +229,10 @@
         verticalAccuracy: Number(verticalAccuracy)
       };
 
-      if (firstFix) map.setZoom(18);
-      map.setCenter([lon, lat]);
-      map.setBearing(lastHeading);
-
-      setStatus('Map live');
+      if (firstFix) map.setZoom(START_ZOOM);
+      applyChasePadding();
+      syncChaseCamera();
+      setStatus('Third-person map live');
       setTelemetry();
     },
 
@@ -154,7 +240,7 @@
       const value = Number(heading);
       if (!Number.isFinite(value)) return;
       lastHeading = ((value % 360) + 360) % 360;
-      map.setBearing(lastHeading);
+      syncChaseCamera();
       setTelemetry();
     },
 
@@ -175,10 +261,11 @@
 
     snapshotState() {
       return JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: 2,
         location: lastLocation,
         heading: lastHeading,
-        zoom: map ? map.getZoom() : null
+        zoom: map ? map.getZoom() : null,
+        pitch: CHASE_PITCH
       });
     },
 
@@ -187,5 +274,5 @@
     }
   };
 
-  setStatus('Loading map');
+  setStatus('Loading third-person map');
 })();
