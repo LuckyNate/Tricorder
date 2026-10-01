@@ -241,16 +241,18 @@
       if (!map || !source || !source.width || !source.height) return false;
       if (!this.pose.hasLocation() || !this.pose.hasAltitude()) return false;
 
+      const displayWidth = Math.max(1, source.clientWidth || (map.getContainer && map.getContainer().clientWidth) || source.width);
+      const displayHeight = Math.max(1, source.clientHeight || (map.getContainer && map.getContainer().clientHeight) || source.height);
       const cells = this.gridCells;
       const columns = cells + 1;
       const vertices = [];
       const valid = new Uint8Array(columns * columns);
 
       for (let row = 0; row <= cells; row += 1) {
-        const py = source.height * row / cells;
+        const py = displayHeight * row / cells;
         const v = row / cells;
         for (let col = 0; col <= cells; col += 1) {
-          const px = source.width * col / cells;
+          const px = displayWidth * col / cells;
           const u = col / cells;
           let lngLat;
           try {
