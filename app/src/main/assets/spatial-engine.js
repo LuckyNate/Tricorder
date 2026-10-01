@@ -5,6 +5,8 @@
 
   const BaseRadarView = window.ScannerCore.RadarView;
   const { WorldSpaceModel, wrapDegrees, finite } = window.WorldSpace;
+  const METERS_PER_DEGREE_LAT = 111320;
+  const DEG = Math.PI / 180;
 
   class SharedRadarView extends BaseRadarView {
     constructor(world = new WorldSpaceModel()) {
@@ -123,6 +125,8 @@
       this.indexBuffer = null;
       this.indexCount = 0;
       this.gridCells = 24;
+      this.terrainSamples = new Map();
+      this.maxTerrainSamples = 256;
       this.initScene();
     }
 
@@ -235,6 +239,58 @@
       }
     }
 
+    terrainSampleKey(lat, lng) {
+      return `${Number(lat).toFixed(6)},${Number(lng).toFixed(6)}`;
+    }
+
+    rememberTerrainSample(lat, lng, elevation) {
+      if (!finite(lat) || !finite(lng) || !finite(elevation)) return;
+      const key = this.terrainSampleKey(lat, lng);
+      if (this.terrainSamples.has(key)) this.terrainSamples.delete(key);
+      this.terrainSamples.set(key, {
+        latitude: Number(lat),
+        longitude: Number(lng),
+        elevation: Number(elevation)
+      });
+      while (this.terrainSamples.size > this.maxTerrainSamples) {
+        const oldestKey = this.terrainSamples.keys().next().value;
+        this.terrainSamples.delete(oldestKey);
+      }
+    }
+
+    terrainDistanceMeters(lat1, lng1, lat2, lng2) {
+      const meanLat = (Number(lat1) + Number(lat2)) * 0.5 * DEG;
+      const north = (Number(lat2) - Number(lat1)) * METERS_PER_DEGREE_LAT;
+      const east = (Number(lng2) - Number(lng1)) * METERS_PER_DEGREE_LAT * Math.cos(meanLat);
+      return Math.hypot(east, north);
+    }
+
+    estimateTerrainElevation(lat, lng) {
+      const samples = Array.from(this.terrainSamples.values());
+      if (!samples.length) return null;
+      if (samples.length === 1) return samples[0].elevation;
+
+      const nearest = samples
+        .map(sample => ({
+          sample,
+          distance: this.terrainDistanceMeters(lat, lng, sample.latitude, sample.longitude)
+        }))
+        .sort((a, b) => a.distance - b.distance)
+        .slice(0, 8);
+
+      if (nearest[0] && nearest[0].distance < 0.05) return nearest[0].sample.elevation;
+
+      let weightedElevation = 0;
+      let totalWeight = 0;
+      nearest.forEach(item => {
+        const distance = Math.max(0.25, item.distance);
+        const weight = 1 / (distance * distance);
+        weightedElevation += item.sample.elevation * weight;
+        totalWeight += weight;
+      });
+      return totalWeight > 0 ? weightedElevation / totalWeight : null;
+    }
+
     rebuildGroundMesh() {
       const map = this.referenceMap();
       const source = this.sourceCanvas();
@@ -245,8 +301,7 @@
       const displayHeight = Math.max(1, source.clientHeight || (map.getContainer && map.getContainer().clientHeight) || source.height);
       const cells = this.gridCells;
       const columns = cells + 1;
-      const vertices = [];
-      const valid = new Uint8Array(columns * columns);
+      const points = new Array(columns * columns);
 
       for (let row = 0; row <= cells; row += 1) {
         const py = displayHeight * row / cells;
@@ -254,33 +309,53 @@
         for (let col = 0; col <= cells; col += 1) {
           const px = displayWidth * col / cells;
           const u = col / cells;
-          let lngLat;
+          const index = row * columns + col;
+          let lngLat = null;
           try {
             lngLat = map.unproject([px, py]);
-          } catch (_) {
-            lngLat = null;
+          } catch (_) {}
+
+          let elevation = null;
+          if (lngLat) {
+            elevation = this.terrainElevation(map, lngLat);
+            if (finite(elevation)) {
+              this.rememberTerrainSample(lngLat.lat, lngLat.lng, elevation);
+            }
           }
 
-          const elevation = lngLat ? this.terrainElevation(map, lngLat) : null;
-          let camera = null;
-          if (lngLat && finite(elevation)) {
+          points[index] = { lngLat, elevation, u, v };
+        }
+      }
+
+      if (!this.terrainSamples.size) return false;
+
+      const vertices = [];
+      const valid = new Uint8Array(columns * columns);
+
+      points.forEach((point, index) => {
+        let camera = null;
+        if (point.lngLat) {
+          const elevation = finite(point.elevation)
+            ? Number(point.elevation)
+            : this.estimateTerrainElevation(point.lngLat.lat, point.lngLat.lng);
+
+          if (finite(elevation)) {
             const vector = this.world.geographicVector({
-              latitude: lngLat.lat,
-              longitude: lngLat.lng,
+              latitude: point.lngLat.lat,
+              longitude: point.lngLat.lng,
               altitude: elevation
             });
             if (vector) camera = this.world.camera.relative(vector, this.pose);
           }
-
-          const index = row * columns + col;
-          if (camera && finite(camera.x) && finite(camera.y) && finite(camera.z)) {
-            vertices.push(camera.x, camera.y, camera.z, u, v);
-            valid[index] = 1;
-          } else {
-            vertices.push(0, 0, -1, u, v);
-          }
         }
-      }
+
+        if (camera && finite(camera.x) && finite(camera.y) && finite(camera.z)) {
+          vertices.push(camera.x, camera.y, camera.z, point.u, point.v);
+          valid[index] = 1;
+        } else {
+          vertices.push(0, 0, -1, point.u, point.v);
+        }
+      });
 
       const indices = [];
       for (let row = 0; row < cells; row += 1) {
