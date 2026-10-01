@@ -30,33 +30,39 @@
       container: 'map',
       center: [0, 20],
       zoom: 1.5,
-      pitch: 0,
+      pitch: 70,
       bearing: 0,
+      maxPitch: 85,
       attributionControl: true,
-      style: {
-        version: 8,
-        sources: {
-          osm: {
-            type: 'raster',
-            tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
-            tileSize: 256,
-            attribution: '© OpenStreetMap contributors'
-          }
-        },
-        layers: [
-          {
-            id: 'osm',
-            type: 'raster',
-            source: 'osm',
-            minzoom: 0,
-            maxzoom: 19
-          }
-        ]
-      }
+      antialias: true,
+      style: 'https://tiles.openfreemap.org/styles/liberty'
     });
 
     map.on('load', () => {
-      setStatus(hasLocation ? 'Map live' : 'Map live — waiting for GPS');
+      try {
+        map.addSource('tricorder-terrain', {
+          type: 'raster-dem',
+          url: 'https://tiles.mapterhorn.com/tilejson.json'
+        });
+        map.setTerrain({ source: 'tricorder-terrain', exaggeration: 1.0 });
+        map.addSource('tricorder-hillshade', {
+          type: 'raster-dem',
+          url: 'https://tiles.mapterhorn.com/tilejson.json'
+        });
+        map.addLayer({
+          id: 'tricorder-hillshade',
+          type: 'hillshade',
+          source: 'tricorder-hillshade',
+          paint: {
+            'hillshade-exaggeration': 0.25
+          }
+        });
+      } catch (error) {
+        fail(error);
+        return;
+      }
+
+      setStatus(hasLocation ? '3D map live' : '3D map live — waiting for GPS');
       map.resize();
     });
 
@@ -88,14 +94,15 @@
         center: [lon, lat],
         zoom: firstFix ? 18 : map.getZoom(),
         bearing: 0,
-        pitch: 0
+        pitch: 70
       });
 
-      setStatus('Map live');
+      setStatus('3D map live');
       setTelemetry([
         `${lat.toFixed(6)}, ${lon.toFixed(6)}`,
         Number.isFinite(lastLocation.accuracy) ? `GPS ±${Math.round(lastLocation.accuracy)} m` : '',
-        Number.isFinite(lastLocation.altitude) ? `Altitude ${lastLocation.altitude.toFixed(1)} m` : ''
+        Number.isFinite(lastLocation.altitude) ? `Altitude ${lastLocation.altitude.toFixed(1)} m` : '',
+        `Pitch 70° · terrain enabled`
       ]);
     },
 
@@ -132,5 +139,5 @@
     }
   };
 
-  setStatus('Loading map');
+  setStatus('Loading 3D map');
 })();
