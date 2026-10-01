@@ -28,6 +28,7 @@ import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.core.location.LocationCompat
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -649,9 +650,13 @@ class MainActivity : Activity(), LocationListener, SensorEventListener {
     }
 
     private fun sendLocation(location: Location) {
-        val altitude = if (location.hasAltitude()) location.altitude else Double.NaN
-        val verticalAccuracy = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && location.hasVerticalAccuracy()) {
-            location.verticalAccuracyMeters
+        val altitude = if (LocationCompat.hasMslAltitude(location)) {
+            LocationCompat.getMslAltitudeMeters(location)
+        } else {
+            Double.NaN
+        }
+        val verticalAccuracy = if (LocationCompat.hasMslAltitudeAccuracy(location)) {
+            LocationCompat.getMslAltitudeAccuracyMeters(location)
         } else {
             Float.NaN
         }
