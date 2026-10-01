@@ -65,6 +65,11 @@ jobs:
         run: |
           echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/tricorder-release.jks"
 
+      - name: Stamp app version
+        run: |
+          VERSION="0.1.${GITHUB_RUN_NUMBER}"
+          sed -i "s/TRICORDER_VERSION_TOKEN/${VERSION}/g" app/src/main/assets/app.js
+
       - name: Build signed release APK
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
