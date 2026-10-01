@@ -108,25 +108,12 @@
   renderer.setClearColor(0x000000, 0);
   threeHost.replaceChildren(renderer.domElement);
 
-  scene.add(new THREE.HemisphereLight(0xffffff, 0x303030, 1.4));
-  const keyLight = new THREE.DirectionalLight(0xffffff, 1.2);
-  keyLight.position.set(2, 4, 3);
-  scene.add(keyLight);
-
-  const phone = new THREE.Group();
-  const body = new THREE.Mesh(
-    new THREE.BoxGeometry(0.82, 1.55, 0.18),
-    new THREE.MeshStandardMaterial({ color: 0x1a2421, roughness: 0.7, metalness: 0.2 })
+  const positionDot = new THREE.Mesh(
+    new THREE.CircleGeometry(0.14, 32),
+    new THREE.MeshBasicMaterial({ color: 0x39ff88 })
   );
-  const screen = new THREE.Mesh(
-    new THREE.BoxGeometry(0.68, 1.30, 0.03),
-    new THREE.MeshStandardMaterial({ color: 0x7dffb2, emissive: 0x173d2a, roughness: 0.35 })
-  );
-  screen.position.z = 0.105;
-  phone.add(body, screen);
-  phone.position.set(0, -1.15, 0);
-  phone.rotation.x = -0.12;
-  scene.add(phone);
+  positionDot.position.set(0, -1.15, 0);
+  scene.add(positionDot);
 
   function resizeThree() {
     const width = Math.max(1, threeHost.clientWidth || 1);
