@@ -8,6 +8,9 @@
   const BASE_MIXEL_METERS = 2.3;
   const MAX_GRID_CELLS = 100;
   const MESH_REFRESH_MS = 500;
+  const MIN_BOOM_DISTANCE = 4;
+  const MAX_BOOM_DISTANCE = 120;
+  const DEFAULT_BOOM_DISTANCE = 18;
 
   class SpatialEngine {
     constructor({ world, map, container, video }) {
@@ -18,22 +21,72 @@
       this.video = video || null;
       this.lastMeshAt = 0;
       this.lastMeshWorldVersion = -1;
-      this.mode = 'overview';
+      this.mode = 'ar';
       this.running = false;
+      this.boomDistance = DEFAULT_BOOM_DISTANCE;
+      this.activePointers = new Map();
+      this.lastPinchDistance = null;
 
       this.scene = new THREE.Scene();
       this.camera = new THREE.PerspectiveCamera(60, 1, 0.05, 4000);
-      this.camera.matrixAutoUpdate = false;
+      this.camera.matrixAutoUpdate = true;
       this.renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
       this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
       this.renderer.setClearColor(0x000000, 0);
       this.renderer.domElement.className = 'spatial-canvas';
+      this.renderer.domElement.style.touchAction = 'none';
       this.container.replaceChildren(this.renderer.domElement);
 
       this.material = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
       this.ground = new THREE.Mesh(new THREE.BufferGeometry(), this.material);
       this.scene.add(this.ground);
       this.mapTexture = null;
+
+      this.bindBoomControls();
+    }
+
+    bindBoomControls() {
+      const canvas = this.renderer.domElement;
+      canvas.addEventListener('pointerdown', event => {
+        this.activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+        try { canvas.setPointerCapture(event.pointerId); } catch (_) {}
+        this.updatePinchReference();
+      });
+      canvas.addEventListener('pointermove', event => {
+        if (!this.activePointers.has(event.pointerId)) return;
+        this.activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+        if (this.activePointers.size !== 2) return;
+        const distance = this.currentPinchDistance();
+        if (!finite(distance)) return;
+        if (finite(this.lastPinchDistance) && this.lastPinchDistance > 0) {
+          const scale = distance / this.lastPinchDistance;
+          this.boomDistance = THREE.MathUtils.clamp(
+            this.boomDistance / scale,
+            MIN_BOOM_DISTANCE,
+            MAX_BOOM_DISTANCE
+          );
+        }
+        this.lastPinchDistance = distance;
+      });
+      const endPointer = event => {
+        this.activePointers.delete(event.pointerId);
+        this.updatePinchReference();
+      };
+      canvas.addEventListener('pointerup', endPointer);
+      canvas.addEventListener('pointercancel', endPointer);
+      canvas.addEventListener('pointerleave', event => {
+        if (event.buttons === 0) endPointer(event);
+      });
+    }
+
+    currentPinchDistance() {
+      if (this.activePointers.size !== 2) return null;
+      const points = Array.from(this.activePointers.values());
+      return Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y);
+    }
+
+    updatePinchReference() {
+      this.lastPinchDistance = this.currentPinchDistance();
     }
 
     terrainElevation(latitude, longitude) {
@@ -169,41 +222,35 @@
       this.camera.updateProjectionMatrix();
     }
 
-    applyArCamera() {
-      const position = this.world.observerWorldPosition();
-      if (!position || !this.world.pose.orientation.hasMatrix) return false;
-      const basis = this.world.arBasis();
-      const right = new THREE.Vector3(basis.right.x, basis.right.y, basis.right.z);
-      const up = new THREE.Vector3(basis.up.x, basis.up.y, basis.up.z);
-      const back = new THREE.Vector3(-basis.forward.x, -basis.forward.y, -basis.forward.z);
-      this.camera.matrixWorld.makeBasis(right, up, back);
-      this.camera.matrixWorld.setPosition(position.x, position.y, position.z);
-      this.camera.matrixWorldInverse.copy(this.camera.matrixWorld).invert();
+    applyThirdPersonCamera() {
+      const subject = this.world.observerWorldPosition();
+      if (!subject) return false;
+
+      const headingRadians = this.world.pose.heading * Math.PI / 180;
+      const forwardX = Math.sin(headingRadians);
+      const forwardZ = Math.cos(headingRadians);
+      const boomHeight = 2 + this.boomDistance * 0.35;
+
+      this.camera.position.set(
+        subject.x - forwardX * this.boomDistance,
+        subject.y + boomHeight,
+        subject.z - forwardZ * this.boomDistance
+      );
+      this.camera.up.set(0, 1, 0);
+      this.camera.lookAt(subject.x, subject.y, subject.z);
+      this.camera.updateMatrixWorld(true);
       this.mode = 'ar';
       return true;
     }
 
-    applyOverviewCamera() {
-      const observer = this.world.observerWorldPosition();
-      if (!observer) return false;
-      this.camera.matrixAutoUpdate = true;
-      this.camera.position.set(observer.x, observer.y + 38, observer.z - 52);
-      this.camera.up.set(0, 1, 0);
-      this.camera.lookAt(observer.x, observer.y - 5, observer.z + 35);
-      this.camera.updateMatrixWorld(true);
-      this.camera.matrixAutoUpdate = false;
-      this.camera.matrixWorldInverse.copy(this.camera.matrixWorld).invert();
-      this.mode = 'overview';
-      return true;
-    }
-
     applyCamera() {
-      return this.world.pose.orientation.hasMatrix ? this.applyArCamera() : this.applyOverviewCamera();
+      return this.applyThirdPersonCamera();
     }
 
     renderFrame(now) {
       if (!this.running) return;
       this.resize();
+      const subjectReady = this.world.pose.hasResolvedCamera() && !!this.world.origin;
       const groundReady = this.resolveObserverGround();
       if (groundReady && (now - this.lastMeshAt >= MESH_REFRESH_MS || this.lastMeshWorldVersion !== this.world.version)) {
         if (this.rebuildGroundMesh()) {
@@ -212,7 +259,7 @@
         }
       }
       if (this.mapTexture) this.mapTexture.needsUpdate = true;
-      if (groundReady && this.applyCamera()) this.renderer.render(this.scene, this.camera);
+      if (subjectReady && this.applyCamera()) this.renderer.render(this.scene, this.camera);
       requestAnimationFrame(time => this.renderFrame(time));
     }
 
