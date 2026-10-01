@@ -162,6 +162,29 @@
       }
     }
 
+    seedTerrainSample(map) {
+      if (!map || !this.pose.hasLocation()) return false;
+      const candidates = [
+        { lat: Number(this.pose.latitude), lng: Number(this.pose.longitude) }
+      ];
+      if (typeof map.getCenter === 'function') {
+        try {
+          const center = map.getCenter();
+          if (center && finite(center.lat) && finite(center.lng)) {
+            candidates.push({ lat: Number(center.lat), lng: Number(center.lng) });
+          }
+        } catch (_) {}
+      }
+      for (const lngLat of candidates) {
+        const elevation = this.terrainElevation(map, lngLat);
+        if (finite(elevation)) {
+          this.rememberTerrainSample(lngLat.lat, lngLat.lng, elevation);
+          return true;
+        }
+      }
+      return this.terrainSamples.size > 0;
+    }
+
     terrainDistanceMeters(lat1, lng1, lat2, lng2) {
       const meanLat = (Number(lat1) + Number(lat2)) * 0.5 * DEG;
       const north = (Number(lat2) - Number(lat1)) * METERS_PER_DEGREE_LAT;
@@ -218,6 +241,7 @@
       const map = this.referenceMap();
       const source = this.sourceCanvas();
       if (!map || !source || !source.width || !source.height) return false;
+      this.seedTerrainSample(map);
       const dims = this.gridDimensions(map, source);
       if (!dims) return false;
       const { width, height, columns, rows } = dims;
