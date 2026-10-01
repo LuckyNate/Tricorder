@@ -1,6 +1,9 @@
 (() => {
   const status = document.getElementById('status');
   const telemetry = document.getElementById('telemetry');
+  const mapHost = document.getElementById('map');
+  const spatialHost = document.getElementById('spatialScene');
+  const video = document.getElementById('camera');
 
   function setStatus(message) {
     if (status) status.textContent = String(message || '');
@@ -12,113 +15,82 @@
 
   function fail(error) {
     const message = error && error.message ? error.message : String(error || 'unknown error');
-    setStatus(`MAP FAULT: ${message}`);
+    setStatus(`SPATIAL FAULT: ${message}`);
   }
 
-  if (!window.maplibregl) {
-    fail('MapLibre failed to load');
+  if (!window.maplibregl || !window.WorldSpace || !window.SpatialEngine || !window.THREE) {
+    fail('spatial dependencies failed to load');
     return;
   }
 
-  let map;
+  const world = new window.WorldSpace.WorldSpaceModel(5);
+  let map = null;
   let mapReady = false;
-  let lastValidAltitude = null;
+  let spatial = null;
 
-  const pose = {
-    latitude: null,
-    longitude: null,
-    accuracy: null,
-    altitude: null,
-    verticalAccuracy: null,
-    heading: 0,
-    pitch: 0,
-    roll: 0
-  };
-
-  function cameraPitchFromPhonePitch(phonePitch) {
-    return Math.min(85, Math.max(0, Math.abs(Number(phonePitch) || 0)));
-  }
-
-  function havePosition() {
-    return Number.isFinite(pose.latitude) && Number.isFinite(pose.longitude);
-  }
-
-  function haveAltitude() {
-    return Number.isFinite(lastValidAltitude);
-  }
-
-  function terrainElevationAtPhone() {
-    if (!mapReady || !havePosition() || typeof map.queryTerrainElevation !== 'function') return null;
-    const elevation = map.queryTerrainElevation([pose.longitude, pose.latitude]);
-    return Number.isFinite(elevation) ? elevation : null;
-  }
-
-  function updateTelemetry(mapPitch, terrainElevation, physicalCamera) {
-    const cameraAltitude = Number.isFinite(terrainElevation) ? terrainElevation + 5 : null;
-    setTelemetry([
-      havePosition() ? `${pose.latitude.toFixed(6)}, ${pose.longitude.toFixed(6)}` : '',
-      Number.isFinite(pose.accuracy) ? `GPS ±${Math.round(pose.accuracy)} m` : '',
-      haveAltitude() ? `WGS84 altitude ${lastValidAltitude.toFixed(1)} m` : 'WGS84 altitude unavailable',
-      Number.isFinite(pose.verticalAccuracy) ? `Vertical ±${Math.round(pose.verticalAccuracy)} m` : '',
-      Number.isFinite(terrainElevation) ? `Terrain ${terrainElevation.toFixed(1)} m MSL` : '',
-      Number.isFinite(cameraAltitude) ? `Camera ${cameraAltitude.toFixed(1)} m MSL · +5.0 m AGL` : '',
-      `Heading ${pose.heading.toFixed(1)}° · pitch ${mapPitch.toFixed(1)}° · roll ${pose.roll.toFixed(1)}°`,
-      physicalCamera ? 'Physical camera active' : '3D overview — terrain elevation unavailable'
-    ]);
-  }
-
-  function showOverview(mapPitch, terrainElevation, reason) {
+  function syncReferenceMap() {
+    const pose = world.pose;
+    if (!mapReady || !pose.hasLocation()) return;
+    map.resize();
     map.jumpTo({
       center: [pose.longitude, pose.latitude],
       zoom: 18,
-      bearing: pose.heading,
-      pitch: 70,
+      bearing: 0,
+      pitch: 0,
       roll: 0
     });
-    setStatus(`3D map live — ${reason}`);
-    updateTelemetry(mapPitch, terrainElevation, false);
+    map.triggerRepaint();
   }
 
-  function applyPhysicalCamera() {
-    if (!mapReady || !havePosition()) return;
+  function updateTelemetry() {
+    const pose = world.pose;
+    const mode = spatial ? spatial.mode : 'waiting';
+    setTelemetry([
+      pose.hasLocation() ? `${pose.latitude.toFixed(6)}, ${pose.longitude.toFixed(6)}` : '',
+      Number.isFinite(pose.accuracy) ? `GPS ±${Math.round(pose.accuracy)} m` : '',
+      Number.isFinite(pose.rawAltitude) ? `Raw GPS altitude ${pose.rawAltitude.toFixed(1)} m` : '',
+      Number.isFinite(pose.groundElevationMSL) ? `Terrain ${pose.groundElevationMSL.toFixed(1)} m MSL` : 'Terrain waiting',
+      Number.isFinite(pose.cameraElevationMSL) ? `Camera ${pose.cameraElevationMSL.toFixed(1)} m MSL · +${pose.cameraHeightAGL.toFixed(1)} m AGL` : '',
+      `Heading ${pose.heading.toFixed(1)}° · pitch ${pose.pitch.toFixed(1)}° · roll ${pose.roll.toFixed(1)}°`,
+      `Spatial mode ${mode}`
+    ]);
+    if (!pose.hasLocation()) setStatus('Waiting for GPS');
+    else if (!Number.isFinite(pose.groundElevationMSL)) setStatus('3D world live — waiting for terrain');
+    else if (mode === 'ar') setStatus('3D world live — AR camera');
+    else setStatus('3D world live — overview camera');
+  }
 
-    const mapPitch = cameraPitchFromPhonePitch(pose.pitch);
-    const terrainElevation = terrainElevationAtPhone();
-
-    if (!Number.isFinite(terrainElevation)) {
-      showOverview(mapPitch, terrainElevation, 'waiting for terrain elevation');
-      return;
-    }
-
-    const cameraAltitude = terrainElevation + 5;
-
+  async function startCamera() {
+    if (!video || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
     try {
-      const cameraOptions = map.calculateCameraOptionsFromCameraLngLatAltRotation(
-        [pose.longitude, pose.latitude],
-        cameraAltitude,
-        pose.heading,
-        mapPitch,
-        pose.roll
-      );
-
-      map.jumpTo(cameraOptions);
-      setStatus('3D map live — camera 5.0 m above terrain');
-      updateTelemetry(mapPitch, terrainElevation, true);
-    } catch (error) {
-      fail(error);
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+          frameRate: { ideal: 30, max: 30 }
+        }
+      });
+      video.srcObject = stream;
+      video.muted = true;
+      video.playsInline = true;
+      await video.play();
+    } catch (_) {
     }
   }
 
   try {
-    map = new maplibregl.Map({
-      container: 'map',
+    map = new window.maplibregl.Map({
+      container: mapHost,
       center: [0, 20],
       zoom: 1.5,
       pitch: 0,
       bearing: 0,
-      maxPitch: 85,
+      interactive: false,
       attributionControl: true,
-      antialias: true,
+      fadeDuration: 0,
+      preserveDrawingBuffer: true,
       style: 'https://tiles.openfreemap.org/styles/liberty'
     });
 
@@ -126,38 +98,29 @@
       try {
         map.addSource('tricorder-terrain', {
           type: 'raster-dem',
-          url: 'https://tiles.mapterhorn.com/tilejson.json'
+          url: 'https://tiles.mapterhorn.com/tilejson.json',
+          tileSize: 256
         });
         map.setTerrain({ source: 'tricorder-terrain', exaggeration: 1.0 });
-
-        map.addSource('tricorder-hillshade', {
-          type: 'raster-dem',
-          url: 'https://tiles.mapterhorn.com/tilejson.json'
-        });
-        map.addLayer({
-          id: 'tricorder-hillshade',
-          type: 'hillshade',
-          source: 'tricorder-hillshade',
-          paint: {
-            'hillshade-exaggeration': 0.25
-          }
-        });
-
-        if (typeof map.setCenterClampedToGround === 'function') {
-          map.setCenterClampedToGround(false);
-        }
       } catch (error) {
         fail(error);
         return;
       }
 
       mapReady = true;
-      map.resize();
-      setStatus(havePosition() ? '3D map live — waiting for terrain elevation' : '3D map live — waiting for GPS');
-      applyPhysicalCamera();
+      syncReferenceMap();
+      spatial = new window.SpatialEngine({ world, map, container: spatialHost, video });
+      spatial.start();
+      startCamera();
+      updateTelemetry();
     });
 
-    map.on('terrain', applyPhysicalCamera);
+    map.on('sourcedata', event => {
+      if (event.sourceId === 'tricorder-terrain') {
+        syncReferenceMap();
+        updateTelemetry();
+      }
+    });
 
     map.on('error', event => {
       if (event && event.error) fail(event.error);
@@ -169,41 +132,21 @@
 
   window.Tricorder = {
     onLocation(latitude, longitude, accuracy, altitude, verticalAccuracy) {
-      const lat = Number(latitude);
-      const lon = Number(longitude);
-      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
-
-      pose.latitude = lat;
-      pose.longitude = lon;
-      pose.accuracy = Number(accuracy);
-
-      const nextAltitude = Number(altitude);
-      if (Number.isFinite(nextAltitude)) {
-        lastValidAltitude = nextAltitude;
-      }
-      pose.altitude = lastValidAltitude;
-
-      const nextVerticalAccuracy = Number(verticalAccuracy);
-      if (Number.isFinite(nextVerticalAccuracy)) {
-        pose.verticalAccuracy = nextVerticalAccuracy;
-      }
-
-      applyPhysicalCamera();
+      world.setLocation(latitude, longitude, accuracy, altitude, verticalAccuracy);
+      syncReferenceMap();
+      updateTelemetry();
     },
 
     onHeading(heading, _accuracy, _source, pitch, roll) {
-      const nextHeading = Number(heading);
-      const nextPitch = Number(pitch);
-      const nextRoll = Number(roll);
-
-      if (Number.isFinite(nextHeading)) pose.heading = ((nextHeading % 360) + 360) % 360;
-      if (Number.isFinite(nextPitch)) pose.pitch = nextPitch;
-      if (Number.isFinite(nextRoll)) pose.roll = nextRoll;
-
-      applyPhysicalCamera();
+      world.setHeading(heading, pitch, roll);
+      updateTelemetry();
     },
 
-    onOrientationMatrix() {},
+    onOrientationMatrix(matrix, displayRotation, declinationDegrees) {
+      world.setOrientation(matrix, displayRotation, declinationDegrees);
+      updateTelemetry();
+    },
+
     onWifiScan() {},
     onBluetoothScan() {},
     onRadioFrame() {},
@@ -215,14 +158,20 @@
     onSensorAvailability() {},
 
     onStatus(message) {
-      if (!havePosition()) setStatus(message || 'Waiting for GPS');
+      if (!world.pose.hasLocation()) setStatus(message || 'Waiting for GPS');
     },
 
     snapshotState() {
+      const pose = world.pose;
       return JSON.stringify({
-        schemaVersion: 1,
-        pose,
-        lastValidAltitude
+        schemaVersion: 2,
+        latitude: pose.latitude,
+        longitude: pose.longitude,
+        accuracy: pose.accuracy,
+        rawAltitude: pose.rawAltitude,
+        verticalAccuracy: pose.verticalAccuracy,
+        groundElevationMSL: pose.groundElevationMSL,
+        cameraHeightAGL: pose.cameraHeightAGL
       });
     },
 
@@ -231,5 +180,5 @@
     }
   };
 
-  setStatus('Loading 3D map');
+  setStatus('Loading unified 3D world');
 })();
