@@ -28,7 +28,7 @@
   const CHASE_PITCH = 60;
   const START_ZOOM = 18;
   const MIN_ZOOM = 1;
-  const MAX_ZOOM = 18.99;
+  const ZOOM_LIMIT = 19;
   const PHONE_SCREEN_Y = 0.70;
 
   function setTelemetry() {
@@ -82,7 +82,10 @@
       if (!Number.isFinite(distance) || distance <= 0) return;
 
       const zoomDelta = Math.log2(distance / pinchStartDistance);
-      map.setZoom(Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, pinchStartZoom + zoomDelta)));
+      const requestedZoom = Math.max(MIN_ZOOM, pinchStartZoom + zoomDelta);
+      if (requestedZoom < ZOOM_LIMIT) {
+        map.setZoom(requestedZoom);
+      }
       setTelemetry();
       event.preventDefault();
     }, { passive: false });
@@ -135,7 +138,6 @@
       container: mapHost,
       center: [0, 20],
       zoom: 1.5,
-      maxZoom: MAX_ZOOM,
       pitch: CHASE_PITCH,
       bearing: 0,
       maxPitch: 85,
