@@ -110,8 +110,7 @@
     }
 
     cameraPosition() {
-      // TEMP DIAGNOSTIC: force camera 50 m above reported altitude to verify whether the map mesh is below the camera. Remove/repair after test.
-      return this.worldPosition(this.pose.latitude, this.pose.longitude, Number(this.pose.altitude) + 50);
+      return this.worldPosition(this.pose.latitude, this.pose.longitude, Number(this.pose.altitude));
     }
 
     setActive(active) {
