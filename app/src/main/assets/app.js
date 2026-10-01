@@ -1,13 +1,21 @@
 (() => {
   const status = document.getElementById('status');
   const telemetry = document.getElementById('telemetry');
+  const mapHost = document.getElementById('map');
 
   function setStatus(message) {
     if (status) status.textContent = String(message || '');
   }
 
-  function setTelemetry(lines) {
-    if (telemetry) telemetry.textContent = lines.filter(Boolean).join('\n');
+  function setTelemetry() {
+    if (!telemetry || !lastLocation || !map) return;
+    telemetry.textContent = [
+      `${lastLocation.latitude.toFixed(6)}, ${lastLocation.longitude.toFixed(6)}`,
+      Number.isFinite(lastLocation.accuracy) ? `GPS ±${Math.round(lastLocation.accuracy)} m` : '',
+      Number.isFinite(lastLocation.altitude) ? `Altitude ${lastLocation.altitude.toFixed(1)} m` : '',
+      `Heading ${lastHeading.toFixed(1)}°`,
+      `Zoom ${map.getZoom().toFixed(2)}`
+    ].filter(Boolean).join('\n');
   }
 
   function fail(error) {
@@ -15,63 +23,69 @@
     setStatus(`MAP FAULT: ${message}`);
   }
 
-  if (!window.maplibregl) {
+  if (!window.maplibregl || !mapHost) {
     fail('MapLibre failed to load');
     return;
   }
 
-  let map;
+  let map = null;
   let hasLocation = false;
   let lastLocation = null;
   let lastHeading = 0;
-  let userGesturing = false;
 
-  function updateTelemetry() {
-    if (!lastLocation) return;
-    setTelemetry([
-      `${lastLocation.latitude.toFixed(6)}, ${lastLocation.longitude.toFixed(6)}`,
-      Number.isFinite(lastLocation.accuracy) ? `GPS ±${Math.round(lastLocation.accuracy)} m` : '',
-      Number.isFinite(lastLocation.altitude) ? `Altitude ${lastLocation.altitude.toFixed(1)} m` : '',
-      `Heading ${lastHeading.toFixed(1)}°`,
-      map ? `Zoom ${map.getZoom().toFixed(2)}` : ''
-    ]);
+  let pinchStartDistance = null;
+  let pinchStartZoom = null;
+
+  function touchDistance(touches) {
+    if (!touches || touches.length < 2) return null;
+    const dx = touches[1].clientX - touches[0].clientX;
+    const dy = touches[1].clientY - touches[0].clientY;
+    return Math.hypot(dx, dy);
   }
 
-  function applyLiveTracking() {
-    if (!map || userGesturing || !lastLocation) return;
-    map.jumpTo({
-      center: [lastLocation.longitude, lastLocation.latitude],
-      bearing: lastHeading,
-      pitch: 0
-    });
-  }
+  function bindPinchZoom() {
+    mapHost.addEventListener('touchstart', event => {
+      if (event.touches.length !== 2) return;
+      const distance = touchDistance(event.touches);
+      if (!Number.isFinite(distance) || distance <= 0) return;
+      pinchStartDistance = distance;
+      pinchStartZoom = map.getZoom();
+      event.preventDefault();
+    }, { passive: false });
 
-  function beginGesture(event) {
-    if (event && event.originalEvent) userGesturing = true;
-  }
+    mapHost.addEventListener('touchmove', event => {
+      if (event.touches.length !== 2) return;
+      if (!Number.isFinite(pinchStartDistance) || !Number.isFinite(pinchStartZoom)) return;
 
-  function endGesture(event) {
-    if (!event || !event.originalEvent) return;
-    requestAnimationFrame(() => {
-      const stillGesturing =
-        (typeof map.isZooming === 'function' && map.isZooming()) ||
-        (typeof map.isDragging === 'function' && map.isDragging()) ||
-        (typeof map.isRotating === 'function' && map.isRotating());
-      if (stillGesturing) return;
-      userGesturing = false;
-      applyLiveTracking();
-      updateTelemetry();
-    });
+      const distance = touchDistance(event.touches);
+      if (!Number.isFinite(distance) || distance <= 0) return;
+
+      const zoomDelta = Math.log2(distance / pinchStartDistance);
+      const zoom = Math.max(1, Math.min(19, pinchStartZoom + zoomDelta));
+      map.setZoom(zoom);
+      setTelemetry();
+      event.preventDefault();
+    }, { passive: false });
+
+    const endPinch = event => {
+      if (event.touches && event.touches.length >= 2) return;
+      pinchStartDistance = null;
+      pinchStartZoom = null;
+      setTelemetry();
+    };
+
+    mapHost.addEventListener('touchend', endPinch, { passive: false });
+    mapHost.addEventListener('touchcancel', endPinch, { passive: false });
   }
 
   try {
     map = new window.maplibregl.Map({
-      container: 'map',
+      container: mapHost,
       center: [0, 20],
       zoom: 1.5,
       pitch: 0,
       bearing: 0,
-      interactive: true,
+      interactive: false,
       attributionControl: true,
       fadeDuration: 0,
       style: {
@@ -96,19 +110,12 @@
       }
     });
 
-    if (map.touchZoomRotate) map.touchZoomRotate.enable();
-    if (map.dragPan) map.dragPan.enable();
-
-    map.on('zoomstart', beginGesture);
-    map.on('dragstart', beginGesture);
-    map.on('rotatestart', beginGesture);
-    map.on('zoomend', endGesture);
-    map.on('dragend', endGesture);
-    map.on('rotateend', endGesture);
+    bindPinchZoom();
 
     map.on('load', () => {
-      setStatus(hasLocation ? 'Map live' : 'Map live — waiting for GPS');
       map.resize();
+      setStatus(hasLocation ? 'Map live' : 'Map live — waiting for GPS');
+      setTelemetry();
     });
 
     map.on('error', event => {
@@ -135,27 +142,20 @@
         verticalAccuracy: Number(verticalAccuracy)
       };
 
-      if (firstFix) {
-        map.jumpTo({
-          center: [lon, lat],
-          zoom: 18,
-          bearing: lastHeading,
-          pitch: 0
-        });
-      } else {
-        applyLiveTracking();
-      }
+      if (firstFix) map.setZoom(18);
+      map.setCenter([lon, lat]);
+      map.setBearing(lastHeading);
 
       setStatus('Map live');
-      updateTelemetry();
+      setTelemetry();
     },
 
     onHeading(heading) {
       const value = Number(heading);
       if (!Number.isFinite(value)) return;
       lastHeading = ((value % 360) + 360) % 360;
-      applyLiveTracking();
-      updateTelemetry();
+      map.setBearing(lastHeading);
+      setTelemetry();
     },
 
     onOrientationMatrix() {},
