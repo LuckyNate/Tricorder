@@ -45,39 +45,16 @@
     }
   }
 
-  class CameraBasis {
-    constructor(right, up, forward) {
-      this.right = right;
-      this.up = up;
-      this.forward = forward;
-    }
-  }
-
-  class Projection {
-    constructor(width = 1, height = 1, verticalFovDegrees = 60, near = 0.05, far = 4000) {
-      this.width = Math.max(1, Number(width) || 1);
-      this.height = Math.max(1, Number(height) || 1);
-      this.verticalFovDegrees = Number(verticalFovDegrees) || 60;
-      this.near = Math.max(0.01, Number(near) || 0.05);
-      this.far = Math.max(this.near + 1, Number(far) || 4000);
-    }
-  }
-
-  class DeviceOrientation {
-    constructor() {
-      this.rawMatrix = [1, 0, 0, 0, 1, 0, 0, 0, 1];
-      this.displayRotation = 0;
-      this.declinationDegrees = 0;
-      this.hasMatrix = false;
-    }
-
-    set(matrix, displayRotation = 0, declinationDegrees = 0) {
-      if (!Array.isArray(matrix) || matrix.length !== 9 || !matrix.every(finite)) return false;
-      this.rawMatrix = matrix.map(Number);
+  class ArBasis {
+    constructor(rawMatrix, displayRotation = 0, declinationDegrees = 0) {
+      this.rawMatrix = Array.isArray(rawMatrix) && rawMatrix.length === 9
+        ? rawMatrix.map(Number)
+        : [1, 0, 0, 0, 1, 0, 0, 0, 1];
       this.displayRotation = Number(displayRotation) || 0;
       this.declinationDegrees = finite(declinationDegrees) ? Number(declinationDegrees) : 0;
-      this.hasMatrix = true;
-      return true;
+      this.right = this.deviceToWorld(this.screenRightDeviceAxis());
+      this.up = this.deviceToWorld(this.screenTopDeviceAxis());
+      this.forward = this.deviceToWorld({ x: 0, y: 0, z: -1 });
     }
 
     screenRightDeviceAxis() {
@@ -115,25 +92,49 @@
         z: -magneticEast * sin + magneticNorth * cos
       });
     }
+  }
 
-    cameraBasis() {
-      return new CameraBasis(
-        this.deviceToWorld(this.screenRightDeviceAxis()),
-        this.deviceToWorld(this.screenTopDeviceAxis()),
-        this.deviceToWorld({ x: 0, y: 0, z: -1 })
-      );
+  class Projection {
+    constructor(width = 1, height = 1, verticalFovDegrees = 60, near = 0.05, far = 4000) {
+      this.width = Math.max(1, Number(width) || 1);
+      this.height = Math.max(1, Number(height) || 1);
+      this.verticalFovDegrees = Number(verticalFovDegrees) || 60;
+      this.near = Math.max(0.01, Number(near) || 0.05);
+      this.far = Math.max(this.near + 1, Number(far) || 4000);
+    }
+  }
+
+  class DeviceOrientation {
+    constructor() {
+      this.rawMatrix = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+      this.displayRotation = 0;
+      this.declinationDegrees = 0;
+      this.hasMatrix = false;
+    }
+
+    set(matrix, displayRotation = 0, declinationDegrees = 0) {
+      if (!Array.isArray(matrix) || matrix.length !== 9 || !matrix.every(finite)) return false;
+      this.rawMatrix = matrix.map(Number);
+      this.displayRotation = Number(displayRotation) || 0;
+      this.declinationDegrees = finite(declinationDegrees) ? Number(declinationDegrees) : 0;
+      this.hasMatrix = true;
+      return true;
+    }
+
+    arBasis() {
+      return new ArBasis(this.rawMatrix, this.displayRotation, this.declinationDegrees);
     }
   }
 
   class ObserverPose {
-    constructor(cameraHeightAGL = 5) {
+    constructor(cameraHeightAGL = 2) {
       this.latitude = null;
       this.longitude = null;
       this.accuracy = null;
       this.rawAltitude = null;
       this.verticalAccuracy = null;
       this.groundElevationMSL = null;
-      this.cameraHeightAGL = Number(cameraHeightAGL) || 5;
+      this.cameraHeightAGL = Number(cameraHeightAGL) || 2;
       this.cameraElevationMSL = null;
       this.heading = 0;
       this.pitch = 0;
@@ -182,7 +183,7 @@
   }
 
   class WorldSpaceModel {
-    constructor(cameraHeightAGL = 5) {
+    constructor(cameraHeightAGL = 2) {
       this.pose = new ObserverPose(cameraHeightAGL);
       this.origin = null;
       this.version = 0;
@@ -244,8 +245,8 @@
       return this.geoToWorld(new TerrainSample(latitude, longitude, elevationMSL));
     }
 
-    cameraBasis() {
-      return this.pose.orientation.cameraBasis();
+    arBasis() {
+      return this.pose.orientation.arBasis();
     }
   }
 
@@ -253,7 +254,7 @@
     GeoPoint,
     TerrainSample,
     WorldVector,
-    CameraBasis,
+    ArBasis,
     Projection,
     DeviceOrientation,
     ObserverPose,
