@@ -54,14 +54,16 @@
   }
 
   function updateTelemetry(mapPitch, terrainElevation, physicalCamera) {
+    const cameraAltitude = Number.isFinite(terrainElevation) ? terrainElevation + 5 : null;
     setTelemetry([
       havePosition() ? `${pose.latitude.toFixed(6)}, ${pose.longitude.toFixed(6)}` : '',
       Number.isFinite(pose.accuracy) ? `GPS ±${Math.round(pose.accuracy)} m` : '',
-      haveAltitude() ? `WGS84 altitude ${lastValidAltitude.toFixed(1)} m` : 'Altitude waiting',
+      haveAltitude() ? `WGS84 altitude ${lastValidAltitude.toFixed(1)} m` : 'WGS84 altitude unavailable',
       Number.isFinite(pose.verticalAccuracy) ? `Vertical ±${Math.round(pose.verticalAccuracy)} m` : '',
       Number.isFinite(terrainElevation) ? `Terrain ${terrainElevation.toFixed(1)} m MSL` : '',
+      Number.isFinite(cameraAltitude) ? `Camera ${cameraAltitude.toFixed(1)} m MSL · +5.0 m AGL` : '',
       `Heading ${pose.heading.toFixed(1)}° · pitch ${mapPitch.toFixed(1)}° · roll ${pose.roll.toFixed(1)}°`,
-      physicalCamera ? 'Physical camera active' : '3D overview — physical altitude unavailable'
+      physicalCamera ? 'Physical camera active' : '3D overview — terrain elevation unavailable'
     ]);
   }
 
@@ -83,30 +85,24 @@
     const mapPitch = cameraPitchFromPhonePitch(pose.pitch);
     const terrainElevation = terrainElevationAtPhone();
 
-    if (!haveAltitude()) {
-      showOverview(mapPitch, terrainElevation, 'waiting for valid altitude');
+    if (!Number.isFinite(terrainElevation)) {
+      showOverview(mapPitch, terrainElevation, 'waiting for terrain elevation');
       return;
     }
 
-    // Android Location.getAltitude() is WGS84 ellipsoid height, while the DEM
-    // is mean-sea-level terrain. Until native code supplies MSL altitude, never
-    // feed an altitude that would put the physical camera at/below terrain.
-    if (Number.isFinite(terrainElevation) && lastValidAltitude <= terrainElevation) {
-      showOverview(mapPitch, terrainElevation, 'altitude datum mismatch');
-      return;
-    }
+    const cameraAltitude = terrainElevation + 5;
 
     try {
       const cameraOptions = map.calculateCameraOptionsFromCameraLngLatAltRotation(
         [pose.longitude, pose.latitude],
-        lastValidAltitude,
+        cameraAltitude,
         pose.heading,
         mapPitch,
         pose.roll
       );
 
       map.jumpTo(cameraOptions);
-      setStatus('3D map live — physical camera scale');
+      setStatus('3D map live — camera 5.0 m above terrain');
       updateTelemetry(mapPitch, terrainElevation, true);
     } catch (error) {
       fail(error);
@@ -157,7 +153,7 @@
 
       mapReady = true;
       map.resize();
-      setStatus(havePosition() ? '3D map live — waiting for valid altitude' : '3D map live — waiting for GPS');
+      setStatus(havePosition() ? '3D map live — waiting for terrain elevation' : '3D map live — waiting for GPS');
       applyPhysicalCamera();
     });
 
