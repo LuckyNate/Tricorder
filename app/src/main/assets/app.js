@@ -135,6 +135,7 @@
       container: mapHost,
       center: [0, 20],
       zoom: 1.5,
+      maxZoom: MAX_ZOOM,
       pitch: CHASE_PITCH,
       bearing: 0,
       maxPitch: 85,
