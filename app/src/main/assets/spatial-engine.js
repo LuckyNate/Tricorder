@@ -7,6 +7,8 @@
   const { WorldSpaceModel, wrapDegrees, finite } = window.WorldSpace;
   const METERS_PER_DEGREE_LAT = 111320;
   const DEG = Math.PI / 180;
+  const BASE_MIXEL_METERS = 2.3;
+  const MAX_GRID_CELLS = 128;
 
   class SharedRadarView extends BaseRadarView {
     constructor(world = new WorldSpaceModel()) {
@@ -24,9 +26,7 @@
       if (!finite(degrees)) return;
       this.heading = wrapDegrees(Number(degrees));
       this.world.setHeading(this.heading);
-      if (this.rotatorEl) {
-        this.rotatorEl.style.transform = `rotate(${-this.heading}deg) scale(1.18)`;
-      }
+      if (this.rotatorEl) this.rotatorEl.style.transform = `rotate(${-this.heading}deg) scale(1.18)`;
     }
 
     setRange(meters) {
@@ -39,9 +39,7 @@
       if (this.pingLayer) this.pingLayer.replaceChildren();
     }
 
-    ping() {
-      return false;
-    }
+    ping() { return false; }
   }
 
   function compileShader(gl, type, source) {
@@ -60,14 +58,12 @@
     const vertexShader = compileShader(gl, gl.VERTEX_SHADER, `
       attribute vec3 aWorldPosition;
       attribute vec2 aUv;
-
       uniform vec3 uCameraPosition;
       uniform vec3 uCameraRight;
       uniform vec3 uCameraUp;
       uniform vec3 uCameraForward;
       uniform float uAspect;
       uniform float uFar;
-
       varying vec2 vUv;
 
       void main() {
@@ -77,12 +73,10 @@
           dot(delta, uCameraUp),
           dot(delta, uCameraForward)
         );
-
         float f = 1.7320508;
         float nearPlane = 0.05;
         float farPlane = max(uFar, nearPlane + 1.0);
         float z = camera.z;
-
         gl_Position = vec4(
           camera.x * f / uAspect,
           camera.y * f,
@@ -98,10 +92,7 @@
       precision mediump float;
       varying vec2 vUv;
       uniform sampler2D uMap;
-
-      void main() {
-        gl_FragColor = texture2D(uMap, vUv);
-      }
+      void main() { gl_FragColor = texture2D(uMap, vUv); }
     `);
 
     const program = gl.createProgram();
@@ -110,7 +101,6 @@
     gl.linkProgram(program);
     gl.deleteShader(vertexShader);
     gl.deleteShader(fragmentShader);
-
     if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
       const message = gl.getProgramInfoLog(program) || 'program link failed';
       gl.deleteProgram(program);
@@ -135,17 +125,18 @@
       this.vertexBuffer = null;
       this.indexBuffer = null;
       this.indexCount = 0;
-      this.gridCells = 24;
       this.terrainSamples = new Map();
-      this.maxTerrainSamples = 256;
+      this.maxTerrainSamples = 32768;
       this.arOrigin = null;
+      this.meshDirty = true;
+      this.lastMeshAttempt = 0;
+      this.lastTerrainRefresh = 0;
       this.initScene();
     }
 
     initScene() {
       if (!this.scene) return;
       this.scene.replaceChildren();
-
       this.canvas = document.createElement('canvas');
       this.canvas.className = 'spatial-map-mesh';
       this.canvas.setAttribute('aria-hidden', 'true');
@@ -160,7 +151,6 @@
       if (!gl) throw new Error('WebGL unavailable for 3D map mesh');
       this.gl = gl;
       this.program = createProgram(gl);
-
       this.vertexBuffer = gl.createBuffer();
       this.indexBuffer = gl.createBuffer();
 
@@ -201,9 +191,7 @@
     }
 
     referenceMap() {
-      return this.radar && this.radar.referenceOverlayMap
-        ? this.radar.referenceOverlayMap
-        : null;
+      return this.radar && this.radar.referenceOverlayMap ? this.radar.referenceOverlayMap : null;
     }
 
     sourceCanvas() {
@@ -219,6 +207,7 @@
         longitude: Number(this.pose.longitude),
         altitude: Number(this.pose.altitude)
       };
+      this.meshDirty = true;
       return true;
     }
 
@@ -232,8 +221,26 @@
       };
     }
 
+    geographicPosition(x, z) {
+      if (!this.arOrigin) return null;
+      const latitude = this.arOrigin.latitude + Number(z) / METERS_PER_DEGREE_LAT;
+      const meanLatitude = (latitude + this.arOrigin.latitude) * 0.5 * DEG;
+      const metersPerDegreeLongitude = METERS_PER_DEGREE_LAT * Math.max(0.000001, Math.cos(meanLatitude));
+      return {
+        latitude,
+        longitude: this.arOrigin.longitude + Number(x) / metersPerDegreeLongitude
+      };
+    }
+
     cameraPosition() {
       return this.worldPosition(this.pose.latitude, this.pose.longitude, this.pose.altitude);
+    }
+
+    mixelMeters() {
+      let size = BASE_MIXEL_METERS;
+      const diameter = Math.max(BASE_MIXEL_METERS, this.rangeMeters * 2);
+      while (Math.ceil(diameter / size) > MAX_GRID_CELLS) size *= 2;
+      return size;
     }
 
     resize() {
@@ -253,19 +260,24 @@
     setActive(active) {
       this.active = Boolean(active);
       if (this.root) this.root.dataset.mapFirst = this.active ? 'true' : 'false';
-      if (this.active) this.ensureArOrigin();
-      if (typeof this.radar.syncReferenceOverlay === 'function') {
-        this.radar.syncReferenceOverlay();
+      if (this.active) {
+        this.ensureArOrigin();
+        this.meshDirty = true;
       }
+      if (typeof this.radar.syncReferenceOverlay === 'function') this.radar.syncReferenceOverlay();
     }
 
     setPose(values = {}) {
+      const oldLat = this.pose.latitude;
+      const oldLon = this.pose.longitude;
+      const oldAlt = this.pose.altitude;
       this.world.setPose(values);
       this.pose = this.world.pose;
       if (this.active) this.ensureArOrigin();
-      if (this.active && typeof this.radar.syncReferenceOverlay === 'function') {
-        this.radar.syncReferenceOverlay();
+      if (oldLat !== this.pose.latitude || oldLon !== this.pose.longitude || oldAlt !== this.pose.altitude) {
+        this.meshDirty = true;
       }
+      if (this.active && typeof this.radar.syncReferenceOverlay === 'function') this.radar.syncReferenceOverlay();
     }
 
     setGravityVector() {}
@@ -273,9 +285,8 @@
     setRange(meters) {
       this.world.setRange(meters);
       this.rangeMeters = this.world.rangeMeters;
-      if (this.active && typeof this.radar.syncReferenceOverlay === 'function') {
-        this.radar.syncReferenceOverlay();
-      }
+      this.meshDirty = true;
+      if (this.active && typeof this.radar.syncReferenceOverlay === 'function') this.radar.syncReferenceOverlay();
     }
 
     terrainElevation(map, lngLat) {
@@ -295,7 +306,6 @@
     rememberTerrainSample(lat, lng, elevation) {
       if (!finite(lat) || !finite(lng) || !finite(elevation)) return;
       const key = this.terrainSampleKey(lat, lng);
-      if (this.terrainSamples.has(key)) this.terrainSamples.delete(key);
       this.terrainSamples.set(key, {
         latitude: Number(lat),
         longitude: Number(lng),
@@ -318,17 +328,11 @@
       const samples = Array.from(this.terrainSamples.values());
       if (!samples.length) return null;
       if (samples.length === 1) return samples[0].elevation;
-
       const nearest = samples
-        .map(sample => ({
-          sample,
-          distance: this.terrainDistanceMeters(lat, lng, sample.latitude, sample.longitude)
-        }))
+        .map(sample => ({ sample, distance: this.terrainDistanceMeters(lat, lng, sample.latitude, sample.longitude) }))
         .sort((a, b) => a.distance - b.distance)
         .slice(0, 8);
-
       if (nearest[0] && nearest[0].distance < 0.05) return nearest[0].sample.elevation;
-
       let weightedElevation = 0;
       let totalWeight = 0;
       nearest.forEach(item => {
@@ -345,31 +349,37 @@
       const source = this.sourceCanvas();
       if (!map || !source || !source.width || !source.height) return false;
       if (!this.ensureArOrigin()) return false;
+      const camera = this.cameraPosition();
+      if (!camera) return false;
 
       const displayWidth = Math.max(1, source.clientWidth || (map.getContainer && map.getContainer().clientWidth) || source.width);
       const displayHeight = Math.max(1, source.clientHeight || (map.getContainer && map.getContainer().clientHeight) || source.height);
-      const cells = this.gridCells;
+      const mixel = this.mixelMeters();
+      const half = Math.ceil(this.rangeMeters / mixel) * mixel;
+      const cells = Math.max(1, Math.ceil((half * 2) / mixel));
       const columns = cells + 1;
       const points = new Array(columns * columns);
 
       for (let row = 0; row <= cells; row += 1) {
-        const py = displayHeight * row / cells;
-        const v = row / cells;
+        const z = camera.z + half - row * mixel;
         for (let col = 0; col <= cells; col += 1) {
-          const px = displayWidth * col / cells;
-          const u = col / cells;
+          const x = camera.x - half + col * mixel;
+          const geo = this.geographicPosition(x, z);
           const index = row * columns + col;
-          let lngLat = null;
-          try {
-            lngLat = map.unproject([px, py]);
-          } catch (_) {}
-
           let elevation = null;
-          if (lngLat) {
+          let u = 0;
+          let v = 0;
+          if (geo) {
+            const lngLat = { lng: geo.longitude, lat: geo.latitude };
             elevation = this.terrainElevation(map, lngLat);
-            if (finite(elevation)) this.rememberTerrainSample(lngLat.lat, lngLat.lng, elevation);
+            if (finite(elevation)) this.rememberTerrainSample(geo.latitude, geo.longitude, elevation);
+            try {
+              const pixel = map.project(lngLat);
+              u = pixel.x / displayWidth;
+              v = pixel.y / displayHeight;
+            } catch (_) {}
           }
-          points[index] = { lngLat, elevation, u, v };
+          points[index] = { x, z, geo, elevation, u, v };
         }
       }
 
@@ -377,24 +387,20 @@
 
       const vertices = [];
       const valid = new Uint8Array(columns * columns);
-
       points.forEach((point, index) => {
-        let world = null;
-        if (point.lngLat) {
-          const elevation = finite(point.elevation)
-            ? Number(point.elevation)
-            : this.estimateTerrainElevation(point.lngLat.lat, point.lngLat.lng);
-          if (finite(elevation)) {
-            world = this.worldPosition(point.lngLat.lat, point.lngLat.lng, elevation);
-          }
-        }
-
-        if (world && finite(world.x) && finite(world.y) && finite(world.z)) {
-          vertices.push(world.x, world.y, world.z, point.u, point.v);
-          valid[index] = 1;
-        } else {
+        if (!point.geo) {
           vertices.push(0, 0, 0, point.u, point.v);
+          return;
         }
+        const elevation = finite(point.elevation)
+          ? Number(point.elevation)
+          : this.estimateTerrainElevation(point.geo.latitude, point.geo.longitude);
+        if (!finite(elevation)) {
+          vertices.push(0, 0, 0, point.u, point.v);
+          return;
+        }
+        vertices.push(point.x, Number(elevation) - this.arOrigin.altitude, point.z, point.u, point.v);
+        valid[index] = 1;
       });
 
       const indices = [];
@@ -408,7 +414,6 @@
           if (valid[c] && valid[b] && valid[d]) indices.push(c, b, d);
         }
       }
-
       if (!indices.length) return false;
 
       const gl = this.gl;
@@ -417,6 +422,8 @@
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
       gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.DYNAMIC_DRAW);
       this.indexCount = indices.length;
+      this.meshDirty = false;
+      this.lastTerrainRefresh = performance.now();
       return true;
     }
 
@@ -429,25 +436,53 @@
       try {
         this.stagingContext.clearRect(0, 0, this.stagingCanvas.width, this.stagingCanvas.height);
         this.stagingContext.drawImage(source, 0, 0, this.stagingCanvas.width, this.stagingCanvas.height);
-        this.gl.pixelStorei(this.gl.UNPACK_FLIP_Y_WEBGL, false);
-        this.gl.texImage2D(
-          this.gl.TEXTURE_2D,
-          0,
-          this.gl.RGBA,
-          this.gl.RGBA,
-          this.gl.UNSIGNED_BYTE,
-          this.stagingCanvas
-        );
+        this.gl.pixelStorei(this.gl.UNPACK_FLIP_Y_WEBGL, true);
+        this.gl.texImage2D(this.gl.TEXTURE_2D, 0, this.gl.RGBA, this.gl.RGBA, this.gl.UNSIGNED_BYTE, this.stagingCanvas);
         return true;
       } catch (_) {
         return false;
       }
     }
 
+    fallbackCameraBasis() {
+      const heading = Number(this.pose.heading || 0) * DEG;
+      const elevation = -Number(this.pose.pitch || 0) * DEG;
+      const forward = {
+        x: Math.sin(heading) * Math.cos(elevation),
+        y: Math.sin(elevation),
+        z: Math.cos(heading) * Math.cos(elevation)
+      };
+      const right = { x: Math.cos(heading), y: 0, z: -Math.sin(heading) };
+      let up = {
+        x: right.y * forward.z - right.z * forward.y,
+        y: right.z * forward.x - right.x * forward.z,
+        z: right.x * forward.y - right.y * forward.x
+      };
+      const roll = Number(this.pose.roll || 0) * DEG;
+      if (roll) {
+        const cos = Math.cos(roll);
+        const sin = Math.sin(roll);
+        const rolledRight = {
+          x: right.x * cos - up.x * sin,
+          y: right.y * cos - up.y * sin,
+          z: right.z * cos - up.z * sin
+        };
+        up = {
+          x: right.x * sin + up.x * cos,
+          y: right.y * sin + up.y * cos,
+          z: right.z * sin + up.z * cos
+        };
+        return { right: rolledRight, up, forward };
+      }
+      return { right, up, forward };
+    }
+
     applyCamera() {
       const cameraPosition = this.cameraPosition();
       if (!cameraPosition) return false;
-      const basis = this.pose.orientation.cameraBasis();
+      const basis = this.pose.orientation && this.pose.orientation.hasMatrix
+        ? this.pose.orientation.cameraBasis()
+        : this.fallbackCameraBasis();
       const gl = this.gl;
       gl.uniform3f(this.uniforms.cameraPosition, cameraPosition.x, cameraPosition.y, cameraPosition.z);
       gl.uniform3f(this.uniforms.cameraRight, basis.right.x, basis.right.y, basis.right.z);
@@ -458,24 +493,27 @@
 
     render() {
       if (!this.active || !this.gl || !this.program) return;
-      if (typeof this.radar.syncReferenceOverlay === 'function') {
-        this.radar.syncReferenceOverlay();
-      }
-
+      if (typeof this.radar.syncReferenceOverlay === 'function') this.radar.syncReferenceOverlay();
       this.resize();
       const gl = this.gl;
       gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-
       const source = this.sourceCanvas();
       if (!source || !source.width || !source.height) return;
-      if (!this.rebuildGroundMesh()) return;
+
+      const now = performance.now();
+      if (this.meshDirty || !this.indexCount || now - this.lastTerrainRefresh > 2000) {
+        if (now - this.lastMeshAttempt > 250) {
+          this.lastMeshAttempt = now;
+          this.rebuildGroundMesh();
+        }
+      }
+      if (!this.indexCount) return;
 
       gl.useProgram(this.program);
       if (!this.applyCamera()) return;
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, this.texture);
       if (!this.uploadMapTexture(source)) return;
-
       gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
       gl.drawElements(gl.TRIANGLES, this.indexCount, gl.UNSIGNED_SHORT, 0);
