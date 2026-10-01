@@ -11,7 +11,8 @@
 <body>
   <main id="app">
     <video id="camera" autoplay muted playsinline></video>
-    <div id="map" aria-label="Georeferenced 3D world map"></div>
+    <div id="map" aria-label="Geographic map data source"></div>
+    <div id="spatialScene" aria-label="Unified 3D world"></div>
     <div id="hud">
       <div id="version">Version: 0.1.258c</div>
       <div id="status">Waiting for position</div>
@@ -20,6 +21,8 @@
   </main>
   <script src="https://unpkg.com/maplibre-gl@^5.12.0/dist/maplibre-gl.js"></script>
   <script src="https://unpkg.com/three@0.180.0/build/three.min.js"></script>
+  <script src="world-space.js"></script>
+  <script src="spatial-engine.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
