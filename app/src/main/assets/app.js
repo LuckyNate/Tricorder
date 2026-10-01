@@ -2,7 +2,6 @@
   const status = document.getElementById('status');
   const telemetry = document.getElementById('telemetry');
   const mapHost = document.getElementById('map');
-  const threeHost = document.getElementById('threeScene');
 
   function setStatus(message) {
     if (status) status.textContent = String(message || '');
@@ -13,10 +12,18 @@
     setStatus(`MAP FAULT: ${message}`);
   }
 
-  if (!window.maplibregl || !window.THREE || !mapHost || !threeHost) {
+  if (!window.maplibregl || !window.THREE || !mapHost) {
     fail('MapLibre/Three.js failed to load');
     return;
   }
+
+  const CHASE_PITCH = 60;
+  const START_ZOOM = 18;
+  const MIN_ZOOM = 1;
+  const ZOOM_LIMIT = 19;
+  const PHONE_SCREEN_Y = 0.70;
+  const PHONE_DOT_RADIUS_METERS = 1.0;
+  const PHONE_DOT_HEIGHT_METERS = 0.6;
 
   let map = null;
   let hasLocation = false;
@@ -24,12 +31,6 @@
   let lastHeading = 0;
   let pinchStartDistance = null;
   let pinchStartZoom = null;
-
-  const CHASE_PITCH = 60;
-  const START_ZOOM = 18;
-  const MIN_ZOOM = 1;
-  const ZOOM_LIMIT = 19;
-  const PHONE_SCREEN_Y = 0.70;
 
   function setTelemetry() {
     if (!telemetry || !lastLocation || !map) return;
@@ -43,18 +44,20 @@
     ].filter(Boolean).join('\n');
   }
 
-  function applyChasePadding() {
-    if (!map) return;
+  function chasePadding() {
     const height = Math.max(1, mapHost.clientHeight || 1);
     const top = Math.round(height * (PHONE_SCREEN_Y * 2 - 1));
-    map.setPadding({ top: Math.max(0, top), right: 0, bottom: 0, left: 0 });
+    return { top: Math.max(0, top), right: 0, bottom: 0, left: 0 };
   }
 
   function syncChaseCamera() {
     if (!map || !lastLocation) return;
-    map.setCenter([lastLocation.longitude, lastLocation.latitude]);
-    map.setBearing(lastHeading);
-    map.setPitch(CHASE_PITCH);
+    map.jumpTo({
+      center: [lastLocation.longitude, lastLocation.latitude],
+      bearing: lastHeading,
+      pitch: CHASE_PITCH,
+      padding: chasePadding()
+    });
   }
 
   function touchDistance(touches) {
@@ -81,11 +84,15 @@
       const distance = touchDistance(event.touches);
       if (!Number.isFinite(distance) || distance <= 0) return;
 
-      const zoomDelta = Math.log2(distance / pinchStartDistance);
-      const requestedZoom = Math.max(MIN_ZOOM, pinchStartZoom + zoomDelta);
+      const requestedZoom = Math.max(
+        MIN_ZOOM,
+        pinchStartZoom + Math.log2(distance / pinchStartDistance)
+      );
+
       if (requestedZoom < ZOOM_LIMIT) {
         map.setZoom(requestedZoom);
       }
+
       setTelemetry();
       event.preventDefault();
     }, { passive: false });
@@ -101,37 +108,76 @@
     mapHost.addEventListener('touchcancel', endPinch, { passive: false });
   }
 
-  const scene = new THREE.Scene();
-  const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
-  camera.position.set(0, 1.5, 5.2);
-  camera.lookAt(0, 0.35, 0);
-
-  const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-  renderer.setClearColor(0x000000, 0);
-  threeHost.replaceChildren(renderer.domElement);
-
-  const positionDot = new THREE.Mesh(
-    new THREE.CircleGeometry(0.14, 32),
-    new THREE.MeshBasicMaterial({ color: 0x39ff88 })
-  );
-  positionDot.position.set(0, -1.15, 0);
-  scene.add(positionDot);
-
-  function resizeThree() {
-    const width = Math.max(1, threeHost.clientWidth || 1);
-    const height = Math.max(1, threeHost.clientHeight || 1);
-    renderer.setSize(width, height, false);
-    camera.aspect = width / height;
-    camera.updateProjectionMatrix();
+  function terrainElevationAtPhone() {
+    if (!map || !lastLocation || typeof map.queryTerrainElevation !== 'function') return 0;
+    try {
+      const elevation = map.queryTerrainElevation(
+        [lastLocation.longitude, lastLocation.latitude],
+        { exaggerated: true }
+      );
+      return Number.isFinite(elevation) ? elevation : 0;
+    } catch (_) {
+      return 0;
+    }
   }
 
-  function renderThree() {
-    resizeThree();
-    renderer.render(scene, camera);
-    requestAnimationFrame(renderThree);
+  function phoneMercatorTransform() {
+    if (!lastLocation) return null;
+    const altitude = terrainElevationAtPhone() + PHONE_DOT_HEIGHT_METERS;
+    const mercator = window.maplibregl.MercatorCoordinate.fromLngLat(
+      [lastLocation.longitude, lastLocation.latitude],
+      altitude
+    );
+    return {
+      x: mercator.x,
+      y: mercator.y,
+      z: mercator.z,
+      scale: mercator.meterInMercatorCoordinateUnits()
+    };
   }
-  requestAnimationFrame(renderThree);
+
+  const phoneLayer = {
+    id: 'tricorder-phone-position',
+    type: 'custom',
+    renderingMode: '3d',
+
+    onAdd(mapInstance, gl) {
+      this.map = mapInstance;
+      this.camera = new THREE.Camera();
+      this.scene = new THREE.Scene();
+
+      this.dot = new THREE.Mesh(
+        new THREE.SphereGeometry(PHONE_DOT_RADIUS_METERS, 24, 16),
+        new THREE.MeshBasicMaterial({ color: 0x39ff88 })
+      );
+      this.scene.add(this.dot);
+
+      this.renderer = new THREE.WebGLRenderer({
+        canvas: mapInstance.getCanvas(),
+        context: gl,
+        antialias: true
+      });
+      this.renderer.autoClear = false;
+    },
+
+    render(gl, args) {
+      const transform = phoneMercatorTransform();
+      if (!transform) return;
+
+      const projectionMatrix = new THREE.Matrix4().fromArray(
+        args.defaultProjectionData.mainMatrix
+      );
+
+      const modelMatrix = new THREE.Matrix4()
+        .makeTranslation(transform.x, transform.y, transform.z)
+        .scale(new THREE.Vector3(transform.scale, -transform.scale, transform.scale));
+
+      this.camera.projectionMatrix = projectionMatrix.multiply(modelMatrix);
+      this.renderer.resetState();
+      this.renderer.render(this.scene, this.camera);
+      this.map.triggerRepaint();
+    }
+  };
 
   try {
     map = new window.maplibregl.Map({
@@ -144,6 +190,7 @@
       interactive: false,
       attributionControl: true,
       fadeDuration: 0,
+      canvasContextAttributes: { antialias: true },
       style: {
         version: 8,
         sources: {
@@ -170,8 +217,6 @@
 
     map.on('load', () => {
       map.resize();
-      applyChasePadding();
-      syncChaseCamera();
 
       try {
         if (!map.getSource('tricorder-terrain')) {
@@ -185,13 +230,17 @@
       } catch (_) {
       }
 
+      if (!map.getLayer(phoneLayer.id)) {
+        map.addLayer(phoneLayer);
+      }
+
+      syncChaseCamera();
       setStatus(hasLocation ? 'Third-person map live' : 'Third-person map — waiting for GPS');
       setTelemetry();
     });
 
     window.addEventListener('resize', () => {
       map.resize();
-      applyChasePadding();
       syncChaseCamera();
     });
 
@@ -220,8 +269,8 @@
       };
 
       if (firstFix) map.setZoom(START_ZOOM);
-      applyChasePadding();
       syncChaseCamera();
+      map.triggerRepaint();
       setStatus('Third-person map live');
       setTelemetry();
     },
@@ -231,6 +280,7 @@
       if (!Number.isFinite(value)) return;
       lastHeading = ((value % 360) + 360) % 360;
       syncChaseCamera();
+      map.triggerRepaint();
       setTelemetry();
     },
 
@@ -251,7 +301,7 @@
 
     snapshotState() {
       return JSON.stringify({
-        schemaVersion: 2,
+        schemaVersion: 3,
         location: lastLocation,
         heading: lastHeading,
         zoom: map ? map.getZoom() : null,
