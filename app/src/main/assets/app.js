@@ -56,8 +56,7 @@
     ]);
     if (!pose.hasLocation()) setStatus('Waiting for GPS');
     else if (!Number.isFinite(pose.groundElevationMSL)) setStatus('3D world live — waiting for terrain');
-    else if (mode === 'ar') setStatus('3D world live — AR camera');
-    else setStatus('3D world live — overview camera');
+    else setStatus('3D world live — third-person camera');
   }
 
   async function startCamera() {
@@ -94,32 +93,38 @@
       style: 'https://tiles.openfreemap.org/styles/liberty'
     });
 
+    mapReady = true;
+    spatial = new window.SpatialEngine({ world, map, container: spatialHost, video });
+    spatial.start();
+    startCamera();
+    syncReferenceMap();
+    updateTelemetry();
+
     map.on('load', () => {
       try {
-        map.addSource('tricorder-terrain', {
-          type: 'raster-dem',
-          url: 'https://tiles.mapterhorn.com/tilejson.json',
-          tileSize: 256
-        });
-        map.setTerrain({ source: 'tricorder-terrain', exaggeration: 1.0 });
+        if (!map.getSource('tricorder-terrain')) {
+          map.addSource('tricorder-terrain', {
+            type: 'raster-dem',
+            url: 'https://tiles.mapterhorn.com/tilejson.json',
+            tileSize: 256
+          });
+          map.setTerrain({ source: 'tricorder-terrain', exaggeration: 1.0 });
+        }
       } catch (error) {
         fail(error);
         return;
       }
 
-      mapReady = true;
       syncReferenceMap();
-      spatial = new window.SpatialEngine({ world, map, container: spatialHost, video });
-      spatial.start();
-      startCamera();
       updateTelemetry();
     });
 
+    map.on('render', () => {
+      if (spatial && typeof spatial.onMapRender === 'function') spatial.onMapRender();
+    });
+
     map.on('sourcedata', event => {
-      if (event.sourceId === 'tricorder-terrain') {
-        syncReferenceMap();
-        updateTelemetry();
-      }
+      if (event.sourceId === 'tricorder-terrain') updateTelemetry();
     });
 
     map.on('error', event => {
