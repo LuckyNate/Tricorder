@@ -47,20 +47,15 @@
         }
         this.referenceOverlayMap.setTerrain({ source: TERRAIN_SOURCE_ID, exaggeration: 1 });
 
-        const markTerrainReady = () => {
-          if (this.referenceOverlayReady) return;
-          this.referenceOverlayReady = true;
-          this.syncReferenceOverlay();
-        };
+        // The map texture is usable as soon as the style is loaded. Terrain is
+        // allowed to refine independently instead of blocking the entire 3D map.
+        this.referenceOverlayReady = true;
+        this.syncReferenceOverlay();
 
         this.referenceOverlayMap.on('sourcedata', event => {
-          if (event.sourceId !== TERRAIN_SOURCE_ID || !event.isSourceLoaded) return;
-          markTerrainReady();
+          if (event.sourceId !== TERRAIN_SOURCE_ID) return;
+          this.syncReferenceOverlay();
         });
-
-        try {
-          if (this.referenceOverlayMap.isSourceLoaded(TERRAIN_SOURCE_ID)) markTerrainReady();
-        } catch (_) {}
       });
     }
 
