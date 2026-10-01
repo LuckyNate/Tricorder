@@ -13,6 +13,7 @@
     const { RadarView, ScannerEngine } = window.ScannerCore;
     const { LocationSensor, HeadingSensor } = window.ScannerSensors;
 
+    const appVersion = 'TRICORDER_VERSION_TOKEN';
     const ranges = [10, 20, 50, 100, 500, 1000];
     const rangeButton = document.getElementById('range');
     const modeToggle = document.getElementById('modeToggle');
@@ -57,7 +58,7 @@
       if (!sourceStatus) return;
       const location = Number.isFinite(pose.latitude) && Number.isFinite(pose.longitude);
       const altitude = Number.isFinite(pose.altitude);
-      sourceStatus.textContent = `mapping · location ${location ? 'live' : 'waiting'} · altitude ${altitude ? `${pose.altitude.toFixed(1)} m` : 'waiting'} · orientation live`;
+      sourceStatus.textContent = `v${appVersion} · mapping · location ${location ? 'live' : 'waiting'} · altitude ${altitude ? `${pose.altitude.toFixed(1)} m` : 'waiting'} · orientation live`;
     }
 
     function applyMode(nextMode) {
