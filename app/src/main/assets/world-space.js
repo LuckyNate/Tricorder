@@ -146,10 +146,7 @@
       if (finite(latitude)) this.latitude = Number(latitude);
       if (finite(longitude)) this.longitude = Number(longitude);
       if (finite(accuracy)) this.accuracy = Number(accuracy);
-      if (finite(rawAltitude)) {
-        this.rawAltitude = Number(rawAltitude);
-        this.cameraElevationMSL = this.rawAltitude + this.cameraHeightAGL;
-      }
+      if (finite(rawAltitude)) this.rawAltitude = Number(rawAltitude);
       if (finite(verticalAccuracy)) this.verticalAccuracy = Number(verticalAccuracy);
     }
 
@@ -162,6 +159,7 @@
     setGroundElevation(elevationMSL) {
       if (!finite(elevationMSL)) return false;
       this.groundElevationMSL = Number(elevationMSL);
+      this.cameraElevationMSL = this.groundElevationMSL + this.cameraHeightAGL;
       return true;
     }
 
@@ -193,7 +191,6 @@
 
     setLocation(latitude, longitude, accuracy, rawAltitude, verticalAccuracy) {
       this.pose.setLocation(latitude, longitude, accuracy, rawAltitude, verticalAccuracy);
-      if (!this.origin && this.pose.hasResolvedCamera()) this.origin = this.pose.cameraGeoPoint();
       this.version += 1;
     }
 
@@ -210,6 +207,9 @@
 
     resolveGroundElevation(elevationMSL) {
       if (!this.pose.setGroundElevation(elevationMSL)) return false;
+      if (!this.origin && this.pose.hasResolvedCamera()) {
+        this.origin = this.pose.cameraGeoPoint();
+      }
       this.version += 1;
       return true;
     }
