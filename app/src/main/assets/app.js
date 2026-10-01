@@ -23,7 +23,7 @@
     return;
   }
 
-  const world = new window.WorldSpace.WorldSpaceModel(5);
+  const world = new window.WorldSpace.WorldSpaceModel(2);
   let map = null;
   let mapReady = false;
   let spatial = null;
