@@ -172,7 +172,7 @@
     applyArCamera() {
       const position = this.world.observerWorldPosition();
       if (!position || !this.world.pose.orientation.hasMatrix) return false;
-      const basis = this.world.cameraBasis();
+      const basis = this.world.arBasis();
       const right = new THREE.Vector3(basis.right.x, basis.right.y, basis.right.z);
       const up = new THREE.Vector3(basis.up.x, basis.up.y, basis.up.z);
       const back = new THREE.Vector3(-basis.forward.x, -basis.forward.y, -basis.forward.z);
