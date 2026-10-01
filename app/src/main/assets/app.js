@@ -36,10 +36,6 @@
   };
 
   function cameraPitchFromPhonePitch(phonePitch) {
-    // Android orientation pitch is 0° with the phone flat and approaches ±90°
-    // as the rear camera approaches the horizon. MapLibre camera pitch is 0°
-    // at nadir and approaches 90° at the horizon, so the magnitude is the
-    // direct semantic conversion between the two coordinate conventions.
     return Math.min(85, Math.max(0, Math.abs(Number(phonePitch) || 0)));
   }
 
@@ -51,26 +47,54 @@
     return Number.isFinite(lastValidAltitude);
   }
 
-  function updateTelemetry(mapPitch) {
+  function terrainElevationAtPhone() {
+    if (!mapReady || !havePosition() || typeof map.queryTerrainElevation !== 'function') return null;
+    const elevation = map.queryTerrainElevation([pose.longitude, pose.latitude]);
+    return Number.isFinite(elevation) ? elevation : null;
+  }
+
+  function updateTelemetry(mapPitch, terrainElevation, physicalCamera) {
     setTelemetry([
       havePosition() ? `${pose.latitude.toFixed(6)}, ${pose.longitude.toFixed(6)}` : '',
       Number.isFinite(pose.accuracy) ? `GPS ±${Math.round(pose.accuracy)} m` : '',
-      haveAltitude() ? `Camera altitude ${lastValidAltitude.toFixed(1)} m ASL` : 'Camera altitude waiting',
+      haveAltitude() ? `WGS84 altitude ${lastValidAltitude.toFixed(1)} m` : 'Altitude waiting',
       Number.isFinite(pose.verticalAccuracy) ? `Vertical ±${Math.round(pose.verticalAccuracy)} m` : '',
-      `Heading ${pose.heading.toFixed(1)}° · pitch ${mapPitch.toFixed(1)}° · roll ${pose.roll.toFixed(1)}°`
+      Number.isFinite(terrainElevation) ? `Terrain ${terrainElevation.toFixed(1)} m MSL` : '',
+      `Heading ${pose.heading.toFixed(1)}° · pitch ${mapPitch.toFixed(1)}° · roll ${pose.roll.toFixed(1)}°`,
+      physicalCamera ? 'Physical camera active' : '3D overview — physical altitude unavailable'
     ]);
+  }
+
+  function showOverview(mapPitch, terrainElevation, reason) {
+    map.jumpTo({
+      center: [pose.longitude, pose.latitude],
+      zoom: 18,
+      bearing: pose.heading,
+      pitch: 70,
+      roll: 0
+    });
+    setStatus(`3D map live — ${reason}`);
+    updateTelemetry(mapPitch, terrainElevation, false);
   }
 
   function applyPhysicalCamera() {
     if (!mapReady || !havePosition()) return;
 
+    const mapPitch = cameraPitchFromPhonePitch(pose.pitch);
+    const terrainElevation = terrainElevationAtPhone();
+
     if (!haveAltitude()) {
-      setStatus('3D map live — waiting for valid altitude');
-      updateTelemetry(cameraPitchFromPhonePitch(pose.pitch));
+      showOverview(mapPitch, terrainElevation, 'waiting for valid altitude');
       return;
     }
 
-    const mapPitch = cameraPitchFromPhonePitch(pose.pitch);
+    // Android Location.getAltitude() is WGS84 ellipsoid height, while the DEM
+    // is mean-sea-level terrain. Until native code supplies MSL altitude, never
+    // feed an altitude that would put the physical camera at/below terrain.
+    if (Number.isFinite(terrainElevation) && lastValidAltitude <= terrainElevation) {
+      showOverview(mapPitch, terrainElevation, 'altitude datum mismatch');
+      return;
+    }
 
     try {
       const cameraOptions = map.calculateCameraOptionsFromCameraLngLatAltRotation(
@@ -83,7 +107,7 @@
 
       map.jumpTo(cameraOptions);
       setStatus('3D map live — physical camera scale');
-      updateTelemetry(mapPitch);
+      updateTelemetry(mapPitch, terrainElevation, true);
     } catch (error) {
       fail(error);
     }
@@ -136,6 +160,8 @@
       setStatus(havePosition() ? '3D map live — waiting for valid altitude' : '3D map live — waiting for GPS');
       applyPhysicalCamera();
     });
+
+    map.on('terrain', applyPhysicalCamera);
 
     map.on('error', event => {
       if (event && event.error) fail(event.error);
