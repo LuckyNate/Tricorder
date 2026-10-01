@@ -21,16 +21,80 @@
   }
 
   let map;
-  let hasLocation = false;
-  let lastLocation = null;
-  let lastHeading = 0;
+  let mapReady = false;
+  let lastValidAltitude = null;
+
+  const pose = {
+    latitude: null,
+    longitude: null,
+    accuracy: null,
+    altitude: null,
+    verticalAccuracy: null,
+    heading: 0,
+    pitch: 0,
+    roll: 0
+  };
+
+  function cameraPitchFromPhonePitch(phonePitch) {
+    // Android orientation pitch is 0° with the phone flat and approaches ±90°
+    // as the rear camera approaches the horizon. MapLibre camera pitch is 0°
+    // at nadir and approaches 90° at the horizon, so the magnitude is the
+    // direct semantic conversion between the two coordinate conventions.
+    return Math.min(85, Math.max(0, Math.abs(Number(phonePitch) || 0)));
+  }
+
+  function havePosition() {
+    return Number.isFinite(pose.latitude) && Number.isFinite(pose.longitude);
+  }
+
+  function haveAltitude() {
+    return Number.isFinite(lastValidAltitude);
+  }
+
+  function updateTelemetry(mapPitch) {
+    setTelemetry([
+      havePosition() ? `${pose.latitude.toFixed(6)}, ${pose.longitude.toFixed(6)}` : '',
+      Number.isFinite(pose.accuracy) ? `GPS ±${Math.round(pose.accuracy)} m` : '',
+      haveAltitude() ? `Camera altitude ${lastValidAltitude.toFixed(1)} m ASL` : 'Camera altitude waiting',
+      Number.isFinite(pose.verticalAccuracy) ? `Vertical ±${Math.round(pose.verticalAccuracy)} m` : '',
+      `Heading ${pose.heading.toFixed(1)}° · pitch ${mapPitch.toFixed(1)}° · roll ${pose.roll.toFixed(1)}°`
+    ]);
+  }
+
+  function applyPhysicalCamera() {
+    if (!mapReady || !havePosition()) return;
+
+    if (!haveAltitude()) {
+      setStatus('3D map live — waiting for valid altitude');
+      updateTelemetry(cameraPitchFromPhonePitch(pose.pitch));
+      return;
+    }
+
+    const mapPitch = cameraPitchFromPhonePitch(pose.pitch);
+
+    try {
+      const cameraOptions = map.calculateCameraOptionsFromCameraLngLatAltRotation(
+        [pose.longitude, pose.latitude],
+        lastValidAltitude,
+        pose.heading,
+        mapPitch,
+        pose.roll
+      );
+
+      map.jumpTo(cameraOptions);
+      setStatus('3D map live — physical camera scale');
+      updateTelemetry(mapPitch);
+    } catch (error) {
+      fail(error);
+    }
+  }
 
   try {
     map = new maplibregl.Map({
       container: 'map',
       center: [0, 20],
       zoom: 1.5,
-      pitch: 70,
+      pitch: 0,
       bearing: 0,
       maxPitch: 85,
       attributionControl: true,
@@ -45,6 +109,7 @@
           url: 'https://tiles.mapterhorn.com/tilejson.json'
         });
         map.setTerrain({ source: 'tricorder-terrain', exaggeration: 1.0 });
+
         map.addSource('tricorder-hillshade', {
           type: 'raster-dem',
           url: 'https://tiles.mapterhorn.com/tilejson.json'
@@ -57,13 +122,19 @@
             'hillshade-exaggeration': 0.25
           }
         });
+
+        if (typeof map.setCenterClampedToGround === 'function') {
+          map.setCenterClampedToGround(false);
+        }
       } catch (error) {
         fail(error);
         return;
       }
 
-      setStatus(hasLocation ? '3D map live' : '3D map live — waiting for GPS');
+      mapReady = true;
       map.resize();
+      setStatus(havePosition() ? '3D map live — waiting for valid altitude' : '3D map live — waiting for GPS');
+      applyPhysicalCamera();
     });
 
     map.on('error', event => {
@@ -80,35 +151,34 @@
       const lon = Number(longitude);
       if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
 
-      const firstFix = !hasLocation;
-      hasLocation = true;
-      lastLocation = {
-        latitude: lat,
-        longitude: lon,
-        accuracy: Number(accuracy),
-        altitude: Number(altitude),
-        verticalAccuracy: Number(verticalAccuracy)
-      };
+      pose.latitude = lat;
+      pose.longitude = lon;
+      pose.accuracy = Number(accuracy);
 
-      map.jumpTo({
-        center: [lon, lat],
-        zoom: firstFix ? 18 : map.getZoom(),
-        bearing: 0,
-        pitch: 70
-      });
+      const nextAltitude = Number(altitude);
+      if (Number.isFinite(nextAltitude)) {
+        lastValidAltitude = nextAltitude;
+      }
+      pose.altitude = lastValidAltitude;
 
-      setStatus('3D map live');
-      setTelemetry([
-        `${lat.toFixed(6)}, ${lon.toFixed(6)}`,
-        Number.isFinite(lastLocation.accuracy) ? `GPS ±${Math.round(lastLocation.accuracy)} m` : '',
-        Number.isFinite(lastLocation.altitude) ? `Altitude ${lastLocation.altitude.toFixed(1)} m` : '',
-        `Pitch 70° · terrain enabled`
-      ]);
+      const nextVerticalAccuracy = Number(verticalAccuracy);
+      if (Number.isFinite(nextVerticalAccuracy)) {
+        pose.verticalAccuracy = nextVerticalAccuracy;
+      }
+
+      applyPhysicalCamera();
     },
 
-    onHeading(heading) {
-      const value = Number(heading);
-      if (Number.isFinite(value)) lastHeading = value;
+    onHeading(heading, _accuracy, _source, pitch, roll) {
+      const nextHeading = Number(heading);
+      const nextPitch = Number(pitch);
+      const nextRoll = Number(roll);
+
+      if (Number.isFinite(nextHeading)) pose.heading = ((nextHeading % 360) + 360) % 360;
+      if (Number.isFinite(nextPitch)) pose.pitch = nextPitch;
+      if (Number.isFinite(nextRoll)) pose.roll = nextRoll;
+
+      applyPhysicalCamera();
     },
 
     onOrientationMatrix() {},
@@ -123,14 +193,14 @@
     onSensorAvailability() {},
 
     onStatus(message) {
-      if (!hasLocation) setStatus(message || 'Waiting for GPS');
+      if (!havePosition()) setStatus(message || 'Waiting for GPS');
     },
 
     snapshotState() {
       return JSON.stringify({
         schemaVersion: 1,
-        location: lastLocation,
-        heading: lastHeading
+        pose,
+        lastValidAltitude
       });
     },
 
