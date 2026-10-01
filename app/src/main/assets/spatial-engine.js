@@ -58,21 +58,34 @@
 
   function createProgram(gl) {
     const vertexShader = compileShader(gl, gl.VERTEX_SHADER, `
-      attribute vec3 aPosition;
+      attribute vec3 aWorldPosition;
       attribute vec2 aUv;
+
+      uniform vec3 uCameraPosition;
+      uniform vec3 uCameraRight;
+      uniform vec3 uCameraUp;
+      uniform vec3 uCameraForward;
       uniform float uAspect;
       uniform float uFar;
+
       varying vec2 vUv;
 
       void main() {
+        vec3 delta = aWorldPosition - uCameraPosition;
+        vec3 camera = vec3(
+          dot(delta, uCameraRight),
+          dot(delta, uCameraUp),
+          dot(delta, uCameraForward)
+        );
+
         float f = 1.7320508;
         float nearPlane = 0.05;
         float farPlane = max(uFar, nearPlane + 1.0);
-        float z = aPosition.z;
+        float z = camera.z;
 
         gl_Position = vec4(
-          aPosition.x * f / uAspect,
-          aPosition.y * f,
+          camera.x * f / uAspect,
+          camera.y * f,
           ((farPlane + nearPlane) / (farPlane - nearPlane)) * z -
             ((2.0 * farPlane * nearPlane) / (farPlane - nearPlane)),
           z
@@ -119,14 +132,13 @@
       this.gl = null;
       this.program = null;
       this.texture = null;
-      this.aspectLocation = null;
-      this.farLocation = null;
       this.vertexBuffer = null;
       this.indexBuffer = null;
       this.indexCount = 0;
       this.gridCells = 24;
       this.terrainSamples = new Map();
       this.maxTerrainSamples = 256;
+      this.arOrigin = null;
       this.initScene();
     }
 
@@ -153,7 +165,7 @@
       this.indexBuffer = gl.createBuffer();
 
       gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
-      const positionLocation = gl.getAttribLocation(this.program, 'aPosition');
+      const positionLocation = gl.getAttribLocation(this.program, 'aWorldPosition');
       const uvLocation = gl.getAttribLocation(this.program, 'aUv');
       const stride = 5 * Float32Array.BYTES_PER_ELEMENT;
       gl.enableVertexAttribArray(positionLocation);
@@ -168,10 +180,20 @@
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
+      this.stagingCanvas = document.createElement('canvas');
+      this.stagingContext = this.stagingCanvas.getContext('2d');
+
       gl.useProgram(this.program);
       gl.uniform1i(gl.getUniformLocation(this.program, 'uMap'), 0);
-      this.aspectLocation = gl.getUniformLocation(this.program, 'uAspect');
-      this.farLocation = gl.getUniformLocation(this.program, 'uFar');
+      this.uniforms = {
+        cameraPosition: gl.getUniformLocation(this.program, 'uCameraPosition'),
+        cameraRight: gl.getUniformLocation(this.program, 'uCameraRight'),
+        cameraUp: gl.getUniformLocation(this.program, 'uCameraUp'),
+        cameraForward: gl.getUniformLocation(this.program, 'uCameraForward'),
+        aspect: gl.getUniformLocation(this.program, 'uAspect'),
+        far: gl.getUniformLocation(this.program, 'uFar')
+      };
+
       gl.enable(gl.DEPTH_TEST);
       gl.depthFunc(gl.LEQUAL);
       gl.disable(gl.CULL_FACE);
@@ -189,6 +211,31 @@
       return map && typeof map.getCanvas === 'function' ? map.getCanvas() : null;
     }
 
+    ensureArOrigin() {
+      if (this.arOrigin) return true;
+      if (!this.pose.hasLocation() || !this.pose.hasAltitude()) return false;
+      this.arOrigin = {
+        latitude: Number(this.pose.latitude),
+        longitude: Number(this.pose.longitude),
+        altitude: Number(this.pose.altitude)
+      };
+      return true;
+    }
+
+    worldPosition(latitude, longitude, altitude) {
+      if (!this.arOrigin || !finite(latitude) || !finite(longitude) || !finite(altitude)) return null;
+      const meanLatitude = (Number(latitude) + this.arOrigin.latitude) * 0.5 * DEG;
+      return {
+        x: (Number(longitude) - this.arOrigin.longitude) * METERS_PER_DEGREE_LAT * Math.cos(meanLatitude),
+        y: Number(altitude) - this.arOrigin.altitude,
+        z: (Number(latitude) - this.arOrigin.latitude) * METERS_PER_DEGREE_LAT
+      };
+    }
+
+    cameraPosition() {
+      return this.worldPosition(this.pose.latitude, this.pose.longitude, this.pose.altitude);
+    }
+
     resize() {
       if (!this.canvas || !this.scene || !this.gl) return;
       const width = Math.max(1, Math.round(this.scene.clientWidth || 320));
@@ -199,13 +246,14 @@
       }
       this.gl.viewport(0, 0, width, height);
       this.gl.useProgram(this.program);
-      if (this.aspectLocation) this.gl.uniform1f(this.aspectLocation, width / height);
-      if (this.farLocation) this.gl.uniform1f(this.farLocation, Math.max(100, this.rangeMeters * 3));
+      this.gl.uniform1f(this.uniforms.aspect, width / height);
+      this.gl.uniform1f(this.uniforms.far, Math.max(100, this.rangeMeters * 3));
     }
 
     setActive(active) {
       this.active = Boolean(active);
       if (this.root) this.root.dataset.mapFirst = this.active ? 'true' : 'false';
+      if (this.active) this.ensureArOrigin();
       if (typeof this.radar.syncReferenceOverlay === 'function') {
         this.radar.syncReferenceOverlay();
       }
@@ -214,6 +262,7 @@
     setPose(values = {}) {
       this.world.setPose(values);
       this.pose = this.world.pose;
+      if (this.active) this.ensureArOrigin();
       if (this.active && typeof this.radar.syncReferenceOverlay === 'function') {
         this.radar.syncReferenceOverlay();
       }
@@ -295,7 +344,7 @@
       const map = this.referenceMap();
       const source = this.sourceCanvas();
       if (!map || !source || !source.width || !source.height) return false;
-      if (!this.pose.hasLocation() || !this.pose.hasAltitude()) return false;
+      if (!this.ensureArOrigin()) return false;
 
       const displayWidth = Math.max(1, source.clientWidth || (map.getContainer && map.getContainer().clientWidth) || source.width);
       const displayHeight = Math.max(1, source.clientHeight || (map.getContainer && map.getContainer().clientHeight) || source.height);
@@ -318,11 +367,8 @@
           let elevation = null;
           if (lngLat) {
             elevation = this.terrainElevation(map, lngLat);
-            if (finite(elevation)) {
-              this.rememberTerrainSample(lngLat.lat, lngLat.lng, elevation);
-            }
+            if (finite(elevation)) this.rememberTerrainSample(lngLat.lat, lngLat.lng, elevation);
           }
-
           points[index] = { lngLat, elevation, u, v };
         }
       }
@@ -333,27 +379,21 @@
       const valid = new Uint8Array(columns * columns);
 
       points.forEach((point, index) => {
-        let camera = null;
+        let world = null;
         if (point.lngLat) {
           const elevation = finite(point.elevation)
             ? Number(point.elevation)
             : this.estimateTerrainElevation(point.lngLat.lat, point.lngLat.lng);
-
           if (finite(elevation)) {
-            const vector = this.world.geographicVector({
-              latitude: point.lngLat.lat,
-              longitude: point.lngLat.lng,
-              altitude: elevation
-            });
-            if (vector) camera = this.world.camera.relative(vector, this.pose);
+            world = this.worldPosition(point.lngLat.lat, point.lngLat.lng, elevation);
           }
         }
 
-        if (camera && finite(camera.x) && finite(camera.y) && finite(camera.z)) {
-          vertices.push(camera.x, camera.y, camera.z, point.u, point.v);
+        if (world && finite(world.x) && finite(world.y) && finite(world.z)) {
+          vertices.push(world.x, world.y, world.z, point.u, point.v);
           valid[index] = 1;
         } else {
-          vertices.push(0, 0, -1, point.u, point.v);
+          vertices.push(0, 0, 0, point.u, point.v);
         }
       });
 
@@ -380,6 +420,42 @@
       return true;
     }
 
+    uploadMapTexture(source) {
+      if (!this.stagingContext || !source || !source.width || !source.height) return false;
+      if (this.stagingCanvas.width !== source.width || this.stagingCanvas.height !== source.height) {
+        this.stagingCanvas.width = source.width;
+        this.stagingCanvas.height = source.height;
+      }
+      try {
+        this.stagingContext.clearRect(0, 0, this.stagingCanvas.width, this.stagingCanvas.height);
+        this.stagingContext.drawImage(source, 0, 0, this.stagingCanvas.width, this.stagingCanvas.height);
+        this.gl.pixelStorei(this.gl.UNPACK_FLIP_Y_WEBGL, false);
+        this.gl.texImage2D(
+          this.gl.TEXTURE_2D,
+          0,
+          this.gl.RGBA,
+          this.gl.RGBA,
+          this.gl.UNSIGNED_BYTE,
+          this.stagingCanvas
+        );
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    applyCamera() {
+      const cameraPosition = this.cameraPosition();
+      if (!cameraPosition) return false;
+      const basis = this.pose.orientation.cameraBasis();
+      const gl = this.gl;
+      gl.uniform3f(this.uniforms.cameraPosition, cameraPosition.x, cameraPosition.y, cameraPosition.z);
+      gl.uniform3f(this.uniforms.cameraRight, basis.right.x, basis.right.y, basis.right.z);
+      gl.uniform3f(this.uniforms.cameraUp, basis.up.x, basis.up.y, basis.up.z);
+      gl.uniform3f(this.uniforms.cameraForward, basis.forward.x, basis.forward.y, basis.forward.z);
+      return true;
+    }
+
     render() {
       if (!this.active || !this.gl || !this.program) return;
       if (typeof this.radar.syncReferenceOverlay === 'function') {
@@ -395,15 +471,10 @@
       if (!this.rebuildGroundMesh()) return;
 
       gl.useProgram(this.program);
+      if (!this.applyCamera()) return;
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, this.texture);
-
-      try {
-        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
-      } catch (_) {
-        return;
-      }
+      if (!this.uploadMapTexture(source)) return;
 
       gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
