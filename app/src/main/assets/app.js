@@ -28,7 +28,7 @@
   const CHASE_PITCH = 60;
   const START_ZOOM = 18;
   const MIN_ZOOM = 1;
-  const MAX_ZOOM = 19;
+  const MAX_ZOOM = 18.99;
   const PHONE_SCREEN_Y = 0.70;
 
   function setTelemetry() {
