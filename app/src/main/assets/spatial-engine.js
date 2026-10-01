@@ -132,9 +132,7 @@
 
     groundFallbackElevation() {
       const pose = this.world.pose;
-      if (finite(pose.rawAltitude)) return Number(pose.rawAltitude);
-      if (finite(pose.groundElevationMSL)) return Number(pose.groundElevationMSL);
-      return null;
+      return finite(pose.groundElevationMSL) ? Number(pose.groundElevationMSL) : null;
     }
 
     resolveObserverGround() {
@@ -142,8 +140,8 @@
       if (!pose.hasLocation()) return false;
 
       const terrain = this.terrainElevation(pose.latitude, pose.longitude);
-      const fallback = this.groundFallbackElevation();
-      const elevation = finite(terrain) ? terrain : fallback;
+      const previousGround = this.groundFallbackElevation();
+      const elevation = finite(terrain) ? terrain : previousGround;
       if (!finite(elevation)) return false;
 
       this.world.resolveGroundElevation(elevation);
