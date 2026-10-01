@@ -24,6 +24,45 @@
   let hasLocation = false;
   let lastLocation = null;
   let lastHeading = 0;
+  let userGesturing = false;
+
+  function updateTelemetry() {
+    if (!lastLocation) return;
+    setTelemetry([
+      `${lastLocation.latitude.toFixed(6)}, ${lastLocation.longitude.toFixed(6)}`,
+      Number.isFinite(lastLocation.accuracy) ? `GPS ±${Math.round(lastLocation.accuracy)} m` : '',
+      Number.isFinite(lastLocation.altitude) ? `Altitude ${lastLocation.altitude.toFixed(1)} m` : '',
+      `Heading ${lastHeading.toFixed(1)}°`,
+      map ? `Zoom ${map.getZoom().toFixed(2)}` : ''
+    ]);
+  }
+
+  function applyLiveTracking() {
+    if (!map || userGesturing || !lastLocation) return;
+    map.jumpTo({
+      center: [lastLocation.longitude, lastLocation.latitude],
+      bearing: lastHeading,
+      pitch: 0
+    });
+  }
+
+  function beginGesture(event) {
+    if (event && event.originalEvent) userGesturing = true;
+  }
+
+  function endGesture(event) {
+    if (!event || !event.originalEvent) return;
+    requestAnimationFrame(() => {
+      const stillGesturing =
+        (typeof map.isZooming === 'function' && map.isZooming()) ||
+        (typeof map.isDragging === 'function' && map.isDragging()) ||
+        (typeof map.isRotating === 'function' && map.isRotating());
+      if (stillGesturing) return;
+      userGesturing = false;
+      applyLiveTracking();
+      updateTelemetry();
+    });
+  }
 
   try {
     map = new window.maplibregl.Map({
@@ -60,6 +99,13 @@
     if (map.touchZoomRotate) map.touchZoomRotate.enable();
     if (map.dragPan) map.dragPan.enable();
 
+    map.on('zoomstart', beginGesture);
+    map.on('dragstart', beginGesture);
+    map.on('rotatestart', beginGesture);
+    map.on('zoomend', endGesture);
+    map.on('dragend', endGesture);
+    map.on('rotateend', endGesture);
+
     map.on('load', () => {
       setStatus(hasLocation ? 'Map live' : 'Map live — waiting for GPS');
       map.resize();
@@ -89,35 +135,27 @@
         verticalAccuracy: Number(verticalAccuracy)
       };
 
-      map.jumpTo({
-        center: [lon, lat],
-        zoom: firstFix ? 18 : map.getZoom(),
-        bearing: lastHeading,
-        pitch: 0
-      });
+      if (firstFix) {
+        map.jumpTo({
+          center: [lon, lat],
+          zoom: 18,
+          bearing: lastHeading,
+          pitch: 0
+        });
+      } else {
+        applyLiveTracking();
+      }
 
       setStatus('Map live');
-      setTelemetry([
-        `${lat.toFixed(6)}, ${lon.toFixed(6)}`,
-        Number.isFinite(lastLocation.accuracy) ? `GPS ±${Math.round(lastLocation.accuracy)} m` : '',
-        Number.isFinite(lastLocation.altitude) ? `Altitude ${lastLocation.altitude.toFixed(1)} m` : '',
-        `Heading ${lastHeading.toFixed(1)}°`
-      ]);
+      updateTelemetry();
     },
 
     onHeading(heading) {
       const value = Number(heading);
       if (!Number.isFinite(value)) return;
       lastHeading = ((value % 360) + 360) % 360;
-      map.jumpTo({ bearing: lastHeading });
-      if (lastLocation) {
-        setTelemetry([
-          `${lastLocation.latitude.toFixed(6)}, ${lastLocation.longitude.toFixed(6)}`,
-          Number.isFinite(lastLocation.accuracy) ? `GPS ±${Math.round(lastLocation.accuracy)} m` : '',
-          Number.isFinite(lastLocation.altitude) ? `Altitude ${lastLocation.altitude.toFixed(1)} m` : '',
-          `Heading ${lastHeading.toFixed(1)}°`
-        ]);
-      }
+      applyLiveTracking();
+      updateTelemetry();
     },
 
     onOrientationMatrix() {},
