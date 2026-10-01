@@ -59,20 +59,21 @@
       attribute vec3 aPosition;
       attribute vec2 aUv;
       uniform float uAspect;
+      uniform float uFar;
       varying vec2 vUv;
 
       void main() {
         float f = 1.7320508;
-        float nearPlane = 0.1;
-        float farPlane = 100.0;
+        float nearPlane = 0.05;
+        float farPlane = max(uFar, nearPlane + 1.0);
         float z = aPosition.z;
 
         gl_Position = vec4(
           aPosition.x * f / uAspect,
           aPosition.y * f,
-          ((farPlane + nearPlane) / (nearPlane - farPlane)) * z +
-            ((2.0 * farPlane * nearPlane) / (nearPlane - farPlane)),
-          -z
+          ((farPlane + nearPlane) / (farPlane - nearPlane)) * z -
+            ((2.0 * farPlane * nearPlane) / (farPlane - nearPlane)),
+          z
         );
         vUv = aUv;
       }
@@ -117,6 +118,11 @@
       this.program = null;
       this.texture = null;
       this.aspectLocation = null;
+      this.farLocation = null;
+      this.vertexBuffer = null;
+      this.indexBuffer = null;
+      this.indexCount = 0;
+      this.gridCells = 24;
       this.initScene();
     }
 
@@ -130,7 +136,7 @@
       this.scene.appendChild(this.canvas);
 
       const gl = this.canvas.getContext('webgl', {
-        alpha: false,
+        alpha: true,
         antialias: true,
         depth: true,
         premultipliedAlpha: false
@@ -139,30 +145,13 @@
       this.gl = gl;
       this.program = createProgram(gl);
 
-      const vertices = new Float32Array([
-        -2.2, -1.15, -1.5,   0, 1,
-         2.2, -1.15, -1.5,   1, 1,
-        -2.2, -1.15, -6.0,   0, 0,
-         2.2, -1.15, -6.0,   1, 0
-      ]);
+      this.vertexBuffer = gl.createBuffer();
+      this.indexBuffer = gl.createBuffer();
 
-      const indices = new Uint16Array([
-        0, 1, 2,
-        2, 1, 3
-      ]);
-
-      const vertexBuffer = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
-
-      const indexBuffer = gl.createBuffer();
-      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
-      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
-
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
       const positionLocation = gl.getAttribLocation(this.program, 'aPosition');
       const uvLocation = gl.getAttribLocation(this.program, 'aUv');
       const stride = 5 * Float32Array.BYTES_PER_ELEMENT;
-
       gl.enableVertexAttribArray(positionLocation);
       gl.vertexAttribPointer(positionLocation, 3, gl.FLOAT, false, stride, 0);
       gl.enableVertexAttribArray(uvLocation);
@@ -178,14 +167,21 @@
       gl.useProgram(this.program);
       gl.uniform1i(gl.getUniformLocation(this.program, 'uMap'), 0);
       this.aspectLocation = gl.getUniformLocation(this.program, 'uAspect');
+      this.farLocation = gl.getUniformLocation(this.program, 'uFar');
       gl.enable(gl.DEPTH_TEST);
       gl.depthFunc(gl.LEQUAL);
       gl.disable(gl.CULL_FACE);
-      gl.clearColor(0.008, 0.016, 0.012, 1.0);
+      gl.clearColor(0, 0, 0, 0);
+    }
+
+    referenceMap() {
+      return this.radar && this.radar.referenceOverlayMap
+        ? this.radar.referenceOverlayMap
+        : null;
     }
 
     sourceCanvas() {
-      const map = this.radar && this.radar.referenceOverlayMap;
+      const map = this.referenceMap();
       return map && typeof map.getCanvas === 'function' ? map.getCanvas() : null;
     }
 
@@ -198,10 +194,9 @@
         this.canvas.height = height;
       }
       this.gl.viewport(0, 0, width, height);
-      if (this.aspectLocation) {
-        this.gl.useProgram(this.program);
-        this.gl.uniform1f(this.aspectLocation, width / height);
-      }
+      this.gl.useProgram(this.program);
+      if (this.aspectLocation) this.gl.uniform1f(this.aspectLocation, width / height);
+      if (this.farLocation) this.gl.uniform1f(this.farLocation, Math.max(100, this.rangeMeters * 3));
     }
 
     setActive(active) {
@@ -230,6 +225,84 @@
       }
     }
 
+    terrainElevation(map, lngLat) {
+      if (!map || typeof map.queryTerrainElevation !== 'function') return null;
+      try {
+        const value = map.queryTerrainElevation(lngLat, { exaggerated: false });
+        return finite(value) ? Number(value) : null;
+      } catch (_) {
+        return null;
+      }
+    }
+
+    rebuildGroundMesh() {
+      const map = this.referenceMap();
+      const source = this.sourceCanvas();
+      if (!map || !source || !source.width || !source.height) return false;
+      if (!this.pose.hasLocation() || !this.pose.hasAltitude()) return false;
+
+      const cells = this.gridCells;
+      const columns = cells + 1;
+      const vertices = [];
+      const valid = new Uint8Array(columns * columns);
+
+      for (let row = 0; row <= cells; row += 1) {
+        const py = source.height * row / cells;
+        const v = row / cells;
+        for (let col = 0; col <= cells; col += 1) {
+          const px = source.width * col / cells;
+          const u = col / cells;
+          let lngLat;
+          try {
+            lngLat = map.unproject([px, py]);
+          } catch (_) {
+            lngLat = null;
+          }
+
+          const elevation = lngLat ? this.terrainElevation(map, lngLat) : null;
+          let camera = null;
+          if (lngLat && finite(elevation)) {
+            const vector = this.world.geographicVector({
+              latitude: lngLat.lat,
+              longitude: lngLat.lng,
+              altitude: elevation
+            });
+            if (vector) camera = this.world.camera.relative(vector, this.pose);
+          }
+
+          const index = row * columns + col;
+          if (camera && finite(camera.x) && finite(camera.y) && finite(camera.z)) {
+            vertices.push(camera.x, camera.y, camera.z, u, v);
+            valid[index] = 1;
+          } else {
+            vertices.push(0, 0, -1, u, v);
+          }
+        }
+      }
+
+      const indices = [];
+      for (let row = 0; row < cells; row += 1) {
+        for (let col = 0; col < cells; col += 1) {
+          const a = row * columns + col;
+          const b = a + 1;
+          const c = a + columns;
+          const d = c + 1;
+          if (valid[a] && valid[b] && valid[c]) indices.push(a, b, c);
+          if (valid[c] && valid[b] && valid[d]) indices.push(c, b, d);
+        }
+      }
+
+      if (!indices.length) return false;
+
+      const gl = this.gl;
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.DYNAMIC_DRAW);
+      this.indexCount = indices.length;
+      return true;
+    }
+
     render() {
       if (!this.active || !this.gl || !this.program) return;
       if (typeof this.radar.syncReferenceOverlay === 'function') {
@@ -242,6 +315,7 @@
 
       const source = this.sourceCanvas();
       if (!source || !source.width || !source.height) return;
+      if (!this.rebuildGroundMesh()) return;
 
       gl.useProgram(this.program);
       gl.activeTexture(gl.TEXTURE0);
@@ -254,7 +328,9 @@
         return;
       }
 
-      gl.drawElements(gl.TRIANGLES, 6, gl.UNSIGNED_SHORT, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.indexBuffer);
+      gl.drawElements(gl.TRIANGLES, this.indexCount, gl.UNSIGNED_SHORT, 0);
     }
   }
 
