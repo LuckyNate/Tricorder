@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#000000">
   <title>Tricorder</title>
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@^5.12.0/dist/maplibre-gl.css">
@@ -10,9 +10,7 @@
 </head>
 <body>
   <main id="app">
-    <video id="camera" autoplay muted playsinline></video>
-    <div id="map" aria-label="Geographic map data source"></div>
-    <div id="spatialScene" aria-label="Unified 3D world"></div>
+    <div id="map" aria-label="Geographic map"></div>
     <div id="hud">
       <div id="version">Version: 0.1.258c</div>
       <div id="status">Waiting for position</div>
@@ -20,9 +18,6 @@
     </div>
   </main>
   <script src="https://unpkg.com/maplibre-gl@^5.12.0/dist/maplibre-gl.js"></script>
-  <script src="https://unpkg.com/three@0.159.0/build/three.min.js"></script>
-  <script src="world-space.js"></script>
-  <script src="spatial-engine.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
