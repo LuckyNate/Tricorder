@@ -20,7 +20,7 @@
   const CHASE_PITCH = 60;
   const START_ZOOM = 18;
   const MIN_ZOOM = 1;
-  const ZOOM_LIMIT = 19;
+  const ZOOM_LIMIT = 16;
   const PHONE_SCREEN_Y = 0.70;
   const CHASE_PADDING_FULL_ZOOM = 12;
   const CHASE_PADDING_ZERO_ZOOM = 8;
@@ -119,7 +119,7 @@
         pinchStartZoom + Math.log2(distance / pinchStartDistance)
       );
 
-      if (requestedZoom < ZOOM_LIMIT) {
+      if (requestedZoom <= ZOOM_LIMIT) {
         enforceGlobalProjection();
         map.setZoom(requestedZoom);
         syncChaseCamera();
