@@ -27,6 +27,7 @@
   const PHONE_DOT_RADIUS_METERS = 1.0;
   const PHONE_DOT_HEIGHT_METERS = 0.6;
   const EARTH_RADIUS_METERS = 6371008.8;
+  const GLOBAL_PROJECTION = { type: 'vertical-perspective' };
 
   let map = null;
   let hasLocation = false;
@@ -45,6 +46,14 @@
       `Zoom ${map.getZoom().toFixed(2)}`,
       `Third-person pitch ${CHASE_PITCH.toFixed(0)}°`
     ].filter(Boolean).join('\n');
+  }
+
+  function enforceGlobalProjection() {
+    if (!map || typeof map.setProjection !== 'function') return;
+    const projection = typeof map.getProjection === 'function' ? map.getProjection() : null;
+    if (!projection || projection.type !== GLOBAL_PROJECTION.type) {
+      map.setProjection(GLOBAL_PROJECTION);
+    }
   }
 
   function chasePadding() {
@@ -72,6 +81,7 @@
 
   function syncChaseCamera() {
     if (!map || !lastLocation) return;
+    enforceGlobalProjection();
     map.jumpTo({
       center: [lastLocation.longitude, lastLocation.latitude],
       bearing: lastHeading,
@@ -110,6 +120,7 @@
       );
 
       if (requestedZoom < ZOOM_LIMIT) {
+        enforceGlobalProjection();
         map.setZoom(requestedZoom);
         syncChaseCamera();
       }
@@ -130,25 +141,13 @@
     mapHost.addEventListener('touchcancel', endPinch, { passive: false });
   }
 
-  function terrainElevationAtPhone() {
-    if (!map || !lastLocation || typeof map.queryTerrainElevation !== 'function') return 0;
-    try {
-      const elevation = map.queryTerrainElevation(
-        [lastLocation.longitude, lastLocation.latitude],
-        { exaggerated: true }
-      );
-      return Number.isFinite(elevation) ? elevation : 0;
-    } catch (_) {
-      return 0;
-    }
-  }
-
   function phoneGlobeModelMatrix() {
     if (!lastLocation) return null;
 
     const longitudeRadians = lastLocation.longitude / 180 * Math.PI;
     const latitudeRadians = lastLocation.latitude / 180 * Math.PI;
-    const altitude = terrainElevationAtPhone() + PHONE_DOT_HEIGHT_METERS;
+    const geodeticAltitude = Number.isFinite(lastLocation.altitude) ? lastLocation.altitude : 0;
+    const altitude = geodeticAltitude + PHONE_DOT_HEIGHT_METERS;
     const scale = 1 / EARTH_RADIUS_METERS;
 
     return new THREE.Matrix4()
@@ -191,6 +190,11 @@
       const modelMatrix = phoneGlobeModelMatrix();
       if (!modelMatrix) return;
 
+      if (!args.defaultProjectionData || args.defaultProjectionData.projectionTransition <= 0) {
+        enforceGlobalProjection();
+        return;
+      }
+
       const projectionMatrix = new THREE.Matrix4().fromArray(
         args.defaultProjectionData.mainMatrix
       );
@@ -212,13 +216,12 @@
       maxPitch: 85,
       interactive: false,
       attributionControl: true,
+      renderWorldCopies: false,
       fadeDuration: 0,
       canvasContextAttributes: { antialias: true },
       style: {
         version: 8,
-        projection: {
-          type: 'vertical-perspective'
-        },
+        projection: GLOBAL_PROJECTION,
         sources: {
           osm: {
             type: 'raster',
@@ -243,17 +246,7 @@
 
     map.on('load', () => {
       map.resize();
-
-      try {
-        if (!map.getSource('tricorder-terrain')) {
-          map.addSource('tricorder-terrain', {
-            type: 'raster-dem',
-            url: 'https://tiles.mapterhorn.com/tilejson.json',
-            tileSize: 256
-          });
-        }
-      } catch (_) {
-      }
+      enforceGlobalProjection();
 
       if (!map.getLayer(phoneLayer.id)) {
         map.addLayer(phoneLayer);
@@ -263,6 +256,8 @@
       setStatus(hasLocation ? 'Third-person map live' : 'Third-person map — waiting for GPS');
       setTelemetry();
     });
+
+    map.on('projectiontransition', enforceGlobalProjection);
 
     window.addEventListener('resize', () => {
       map.resize();
@@ -293,6 +288,7 @@
         verticalAccuracy: Number(verticalAccuracy)
       };
 
+      enforceGlobalProjection();
       if (firstFix) map.setZoom(START_ZOOM);
       syncChaseCamera();
       map.triggerRepaint();
