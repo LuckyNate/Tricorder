@@ -29,9 +29,13 @@
   const MAX_TRUSTED_VERTICAL_ACCURACY_METERS = 100;
   const MAX_REASONABLE_HEIGHT_ABOVE_GROUND_METERS = 180;
   const TERRAIN_SOURCE_ID = 'tricorder-terrain';
+  const TERRAIN_SAMPLE_ZOOM = 14;
   const GLOBAL_PROJECTION = { type: 'vertical-perspective' };
 
   let map = null;
+  let terrainSampler = null;
+  let terrainSamplerHost = null;
+  let terrainSamplerReady = false;
   let phoneMarker = null;
   let hasLocation = false;
   let lastLocation = null;
@@ -45,11 +49,121 @@
     return Number.isFinite(Number(value));
   }
 
+  function rawAltitude() {
+    return lastLocation && finite(lastLocation.altitude)
+      ? Number(lastLocation.altitude)
+      : null;
+  }
+
+  function verticalAccuracy() {
+    return lastLocation && finite(lastLocation.verticalAccuracy)
+      ? Math.max(0, Number(lastLocation.verticalAccuracy))
+      : null;
+  }
+
+  function groundSampleLooksResolved(value) {
+    if (!finite(value)) return false;
+    const ground = Number(value);
+    const altitude = rawAltitude();
+    const accuracy = verticalAccuracy();
+
+    // A zero DEM result can be a transient/unresolved sample while tiles load.
+    // Do not let it drag a clearly elevated GPS fix down to sea level.
+    if (
+      ground === 0 &&
+      finite(altitude) &&
+      altitude > 30 &&
+      (!finite(accuracy) || accuracy <= MAX_TRUSTED_VERTICAL_ACCURACY_METERS)
+    ) {
+      return false;
+    }
+
+    return true;
+  }
+
+  function createTerrainSampler() {
+    if (terrainSampler) return;
+
+    terrainSamplerHost = document.createElement('div');
+    terrainSamplerHost.setAttribute('aria-hidden', 'true');
+    terrainSamplerHost.style.position = 'fixed';
+    terrainSamplerHost.style.left = '-512px';
+    terrainSamplerHost.style.top = '-512px';
+    terrainSamplerHost.style.width = '256px';
+    terrainSamplerHost.style.height = '256px';
+    terrainSamplerHost.style.opacity = '0';
+    terrainSamplerHost.style.pointerEvents = 'none';
+    terrainSamplerHost.style.zIndex = '-1';
+    document.body.appendChild(terrainSamplerHost);
+
+    terrainSampler = new window.maplibregl.Map({
+      container: terrainSamplerHost,
+      center: [0, 0],
+      zoom: TERRAIN_SAMPLE_ZOOM,
+      interactive: false,
+      attributionControl: false,
+      renderWorldCopies: false,
+      fadeDuration: 0,
+      style: {
+        version: 8,
+        sources: {
+          [TERRAIN_SOURCE_ID]: {
+            type: 'raster-dem',
+            url: 'https://demotiles.maplibre.org/terrain-tiles/tiles.json',
+            tileSize: 256
+          }
+        },
+        terrain: {
+          source: TERRAIN_SOURCE_ID,
+          exaggeration: 1
+        },
+        layers: [
+          {
+            id: 'terrain-sampler-background',
+            type: 'background',
+            paint: { 'background-color': '#000000' }
+          }
+        ]
+      }
+    });
+
+    terrainSampler.on('load', () => {
+      terrainSamplerReady = true;
+      syncTerrainSampler();
+    });
+
+    terrainSampler.on('sourcedata', event => {
+      if (event && event.sourceId === TERRAIN_SOURCE_ID && lastLocation) {
+        resolvePhoneAltitude();
+        setTelemetry();
+      }
+    });
+  }
+
+  function syncTerrainSampler() {
+    if (!terrainSampler || !terrainSamplerReady || !lastLocation) return;
+    terrainSampler.jumpTo({
+      center: [lastLocation.longitude, lastLocation.latitude],
+      zoom: TERRAIN_SAMPLE_ZOOM,
+      pitch: 0,
+      bearing: 0
+    });
+    terrainSampler.triggerRepaint();
+  }
+
   function terrainElevation(latitude, longitude) {
-    if (!map || typeof map.queryTerrainElevation !== 'function') return null;
+    if (
+      !terrainSampler ||
+      !terrainSamplerReady ||
+      typeof terrainSampler.queryTerrainElevation !== 'function'
+    ) return null;
+
     try {
-      const value = map.queryTerrainElevation([Number(longitude), Number(latitude)]);
-      return finite(value) ? Number(value) : null;
+      const value = terrainSampler.queryTerrainElevation([
+        Number(longitude),
+        Number(latitude)
+      ]);
+      return groundSampleLooksResolved(value) ? Number(value) : null;
     } catch (_) {
       return null;
     }
@@ -58,28 +172,26 @@
   function resolvePhoneAltitude() {
     if (!lastLocation) return null;
 
-    const rawAltitude = finite(lastLocation.altitude) ? Number(lastLocation.altitude) : null;
-    const verticalAccuracy = finite(lastLocation.verticalAccuracy)
-      ? Math.max(0, Number(lastLocation.verticalAccuracy))
-      : null;
+    const altitude = rawAltitude();
+    const accuracy = verticalAccuracy();
     const groundElevation = terrainElevation(lastLocation.latitude, lastLocation.longitude);
 
     if (finite(groundElevation)) {
       lastGroundElevation = groundElevation;
 
-      const tolerance = Math.max(12, finite(verticalAccuracy) ? verticalAccuracy * 2.5 : 30);
+      const tolerance = Math.max(12, finite(accuracy) ? accuracy * 2.5 : 30);
       const minimumPlausibleAltitude = groundElevation - Math.min(5, tolerance * 0.15);
       const maximumPlausibleAltitude = groundElevation + Math.max(
         MAX_REASONABLE_HEIGHT_ABOVE_GROUND_METERS,
         tolerance * 3
       );
-      const rawIsTrustworthy = finite(rawAltitude) &&
-        (!finite(verticalAccuracy) || verticalAccuracy <= MAX_TRUSTED_VERTICAL_ACCURACY_METERS) &&
-        rawAltitude >= minimumPlausibleAltitude &&
-        rawAltitude <= maximumPlausibleAltitude;
+      const rawIsTrustworthy = finite(altitude) &&
+        (!finite(accuracy) || accuracy <= MAX_TRUSTED_VERTICAL_ACCURACY_METERS) &&
+        altitude >= minimumPlausibleAltitude &&
+        altitude <= maximumPlausibleAltitude;
 
       if (rawIsTrustworthy) {
-        lastResolvedAltitude = rawAltitude;
+        lastResolvedAltitude = altitude;
       } else if (
         !finite(lastResolvedAltitude) ||
         lastResolvedAltitude < groundElevation - 5 ||
@@ -92,10 +204,10 @@
     }
 
     if (
-      finite(rawAltitude) &&
-      (!finite(verticalAccuracy) || verticalAccuracy <= MAX_TRUSTED_VERTICAL_ACCURACY_METERS)
+      finite(altitude) &&
+      (!finite(accuracy) || accuracy <= MAX_TRUSTED_VERTICAL_ACCURACY_METERS)
     ) {
-      lastResolvedAltitude = rawAltitude;
+      lastResolvedAltitude = altitude;
     }
 
     return lastResolvedAltitude;
@@ -273,16 +385,7 @@
             tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
             tileSize: 256,
             attribution: '© OpenStreetMap contributors'
-          },
-          [TERRAIN_SOURCE_ID]: {
-            type: 'raster-dem',
-            url: 'https://demotiles.maplibre.org/terrain-tiles/tiles.json',
-            tileSize: 256
           }
-        },
-        terrain: {
-          source: TERRAIN_SOURCE_ID,
-          exaggeration: 1
         },
         layers: [
           {
@@ -296,6 +399,7 @@
       }
     });
 
+    createTerrainSampler();
     bindPinchZoom();
 
     map.on('load', () => {
@@ -303,17 +407,11 @@
       enforceGlobalProjection();
       createPhoneMarker();
       updatePhoneMarker();
+      syncTerrainSampler();
       resolvePhoneAltitude();
       syncChaseCamera();
       setStatus(hasLocation ? 'Third-person map live' : 'Third-person map — waiting for GPS');
       setTelemetry();
-    });
-
-    map.on('sourcedata', event => {
-      if (event && event.sourceId === TERRAIN_SOURCE_ID && lastLocation) {
-        resolvePhoneAltitude();
-        setTelemetry();
-      }
     });
 
     map.on('projectiontransition', enforceGlobalProjection);
@@ -348,6 +446,7 @@
       };
 
       enforceGlobalProjection();
+      syncTerrainSampler();
       resolvePhoneAltitude();
       updatePhoneMarker();
       if (firstFix) map.setZoom(START_ZOOM);
