@@ -24,24 +24,92 @@
   const PHONE_SCREEN_Y = 0.70;
   const CHASE_PADDING_FULL_ZOOM = 12;
   const CHASE_PADDING_ZERO_ZOOM = 8;
-  const PHONE_DOT_RADIUS_METERS = 1.0;
-  const PHONE_DOT_HEIGHT_METERS = 0.6;
-  const EARTH_RADIUS_METERS = 6371008.8;
+  const PHONE_DOT_SIZE_PX = 10;
+  const PHONE_HEIGHT_AGL_METERS = 1.86;
+  const MAX_TRUSTED_VERTICAL_ACCURACY_METERS = 100;
+  const MAX_REASONABLE_HEIGHT_ABOVE_GROUND_METERS = 180;
+  const TERRAIN_SOURCE_ID = 'tricorder-terrain';
   const GLOBAL_PROJECTION = { type: 'vertical-perspective' };
 
   let map = null;
+  let phoneMarker = null;
   let hasLocation = false;
   let lastLocation = null;
   let lastHeading = 0;
+  let lastResolvedAltitude = null;
+  let lastGroundElevation = null;
   let pinchStartDistance = null;
   let pinchStartZoom = null;
 
+  function finite(value) {
+    return Number.isFinite(Number(value));
+  }
+
+  function terrainElevation(latitude, longitude) {
+    if (!map || typeof map.queryTerrainElevation !== 'function') return null;
+    try {
+      const value = map.queryTerrainElevation([Number(longitude), Number(latitude)]);
+      return finite(value) ? Number(value) : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function resolvePhoneAltitude() {
+    if (!lastLocation) return null;
+
+    const rawAltitude = finite(lastLocation.altitude) ? Number(lastLocation.altitude) : null;
+    const verticalAccuracy = finite(lastLocation.verticalAccuracy)
+      ? Math.max(0, Number(lastLocation.verticalAccuracy))
+      : null;
+    const groundElevation = terrainElevation(lastLocation.latitude, lastLocation.longitude);
+
+    if (finite(groundElevation)) {
+      lastGroundElevation = groundElevation;
+
+      const tolerance = Math.max(12, finite(verticalAccuracy) ? verticalAccuracy * 2.5 : 30);
+      const minimumPlausibleAltitude = groundElevation - Math.min(5, tolerance * 0.15);
+      const maximumPlausibleAltitude = groundElevation + Math.max(
+        MAX_REASONABLE_HEIGHT_ABOVE_GROUND_METERS,
+        tolerance * 3
+      );
+      const rawIsTrustworthy = finite(rawAltitude) &&
+        (!finite(verticalAccuracy) || verticalAccuracy <= MAX_TRUSTED_VERTICAL_ACCURACY_METERS) &&
+        rawAltitude >= minimumPlausibleAltitude &&
+        rawAltitude <= maximumPlausibleAltitude;
+
+      if (rawIsTrustworthy) {
+        lastResolvedAltitude = rawAltitude;
+      } else if (
+        !finite(lastResolvedAltitude) ||
+        lastResolvedAltitude < groundElevation - 5 ||
+        lastResolvedAltitude > groundElevation + MAX_REASONABLE_HEIGHT_ABOVE_GROUND_METERS
+      ) {
+        lastResolvedAltitude = groundElevation + PHONE_HEIGHT_AGL_METERS;
+      }
+
+      return lastResolvedAltitude;
+    }
+
+    if (
+      finite(rawAltitude) &&
+      (!finite(verticalAccuracy) || verticalAccuracy <= MAX_TRUSTED_VERTICAL_ACCURACY_METERS)
+    ) {
+      lastResolvedAltitude = rawAltitude;
+    }
+
+    return lastResolvedAltitude;
+  }
+
   function setTelemetry() {
     if (!telemetry || !lastLocation || !map) return;
+    const resolvedAltitude = resolvePhoneAltitude();
     telemetry.textContent = [
       `${lastLocation.latitude.toFixed(6)}, ${lastLocation.longitude.toFixed(6)}`,
-      Number.isFinite(lastLocation.accuracy) ? `GPS ±${Math.round(lastLocation.accuracy)} m` : '',
-      Number.isFinite(lastLocation.altitude) ? `Altitude ${lastLocation.altitude.toFixed(1)} m` : '',
+      finite(lastLocation.accuracy) ? `GPS ±${Math.round(lastLocation.accuracy)} m` : '',
+      finite(resolvedAltitude) ? `Altitude ${resolvedAltitude.toFixed(1)} m MSL` : '',
+      finite(lastGroundElevation) ? `Ground ${lastGroundElevation.toFixed(1)} m MSL` : '',
+      finite(lastLocation.verticalAccuracy) ? `Vertical ±${Math.round(lastLocation.verticalAccuracy)} m` : '',
       `Heading ${lastHeading.toFixed(1)}°`,
       `Zoom ${map.getZoom().toFixed(2)}`,
       `Third-person pitch ${CHASE_PITCH.toFixed(0)}°`
@@ -101,7 +169,7 @@
     mapHost.addEventListener('touchstart', event => {
       if (event.touches.length !== 2) return;
       const distance = touchDistance(event.touches);
-      if (!Number.isFinite(distance) || distance <= 0) return;
+      if (!finite(distance) || distance <= 0) return;
       pinchStartDistance = distance;
       pinchStartZoom = map.getZoom();
       event.preventDefault();
@@ -109,10 +177,10 @@
 
     mapHost.addEventListener('touchmove', event => {
       if (event.touches.length !== 2) return;
-      if (!Number.isFinite(pinchStartDistance) || !Number.isFinite(pinchStartZoom)) return;
+      if (!finite(pinchStartDistance) || !finite(pinchStartZoom)) return;
 
       const distance = touchDistance(event.touches);
-      if (!Number.isFinite(distance) || distance <= 0) return;
+      if (!finite(distance) || distance <= 0) return;
 
       const requestedZoom = Math.max(
         MIN_ZOOM,
@@ -141,70 +209,47 @@
     mapHost.addEventListener('touchcancel', endPinch, { passive: false });
   }
 
-  function phoneGlobeModelMatrix() {
-    if (!lastLocation) return null;
+  function createPhoneMarker() {
+    if (!map || phoneMarker) return;
 
-    const longitudeRadians = lastLocation.longitude / 180 * Math.PI;
-    const latitudeRadians = lastLocation.latitude / 180 * Math.PI;
-    const geodeticAltitude = Number.isFinite(lastLocation.altitude) ? lastLocation.altitude : 0;
-    const altitude = geodeticAltitude + PHONE_DOT_HEIGHT_METERS;
-    const scale = 1 / EARTH_RADIUS_METERS;
+    const dot = document.createElement('div');
+    dot.setAttribute('aria-label', 'Current phone position');
+    dot.style.width = `${PHONE_DOT_SIZE_PX}px`;
+    dot.style.height = `${PHONE_DOT_SIZE_PX}px`;
+    dot.style.boxSizing = 'border-box';
+    dot.style.borderRadius = '50%';
+    dot.style.background = '#39ff88';
+    dot.style.border = '1px solid rgba(230,255,240,0.9)';
+    dot.style.boxShadow = '0 0 5px rgba(57,255,136,0.9)';
+    dot.style.pointerEvents = 'none';
+    dot.style.transition = 'opacity 120ms linear';
+    dot.style.willChange = 'transform, opacity';
 
-    return new THREE.Matrix4()
-      .makeRotationY(longitudeRadians)
-      .multiply(new THREE.Matrix4().makeRotationX(-latitudeRadians))
-      .multiply(new THREE.Matrix4().makeTranslation(
-        0,
-        0,
-        1 + altitude / EARTH_RADIUS_METERS
-      ))
-      .multiply(new THREE.Matrix4().makeRotationX(Math.PI / 2))
-      .multiply(new THREE.Matrix4().makeScale(scale, scale, scale));
+    phoneMarker = new window.maplibregl.Marker({
+      element: dot,
+      anchor: 'center',
+      pitchAlignment: 'viewport',
+      rotationAlignment: 'viewport',
+      opacity: 1,
+      opacityWhenCovered: 0.35,
+      subpixelPositioning: true
+    });
+
+    if (lastLocation) {
+      phoneMarker
+        .setLngLat([lastLocation.longitude, lastLocation.latitude])
+        .addTo(map);
+    }
   }
 
-  const phoneLayer = {
-    id: 'tricorder-phone-position',
-    type: 'custom',
-    renderingMode: '3d',
+  function updatePhoneMarker() {
+    if (!map || !lastLocation) return;
+    createPhoneMarker();
+    if (!phoneMarker) return;
 
-    onAdd(mapInstance, gl) {
-      this.map = mapInstance;
-      this.camera = new THREE.Camera();
-      this.scene = new THREE.Scene();
-
-      this.dot = new THREE.Mesh(
-        new THREE.SphereGeometry(PHONE_DOT_RADIUS_METERS, 24, 16),
-        new THREE.MeshBasicMaterial({ color: 0x39ff88 })
-      );
-      this.scene.add(this.dot);
-
-      this.renderer = new THREE.WebGLRenderer({
-        canvas: mapInstance.getCanvas(),
-        context: gl,
-        antialias: true
-      });
-      this.renderer.autoClear = false;
-    },
-
-    render(gl, args) {
-      const modelMatrix = phoneGlobeModelMatrix();
-      if (!modelMatrix) return;
-
-      if (!args.defaultProjectionData || args.defaultProjectionData.projectionTransition <= 0) {
-        enforceGlobalProjection();
-        return;
-      }
-
-      const projectionMatrix = new THREE.Matrix4().fromArray(
-        args.defaultProjectionData.mainMatrix
-      );
-
-      this.camera.projectionMatrix = projectionMatrix.multiply(modelMatrix);
-      this.renderer.resetState();
-      this.renderer.render(this.scene, this.camera);
-      this.map.triggerRepaint();
-    }
-  };
+    phoneMarker.setLngLat([lastLocation.longitude, lastLocation.latitude]);
+    if (!phoneMarker.getElement().parentNode) phoneMarker.addTo(map);
+  }
 
   try {
     map = new window.maplibregl.Map({
@@ -228,7 +273,16 @@
             tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
             tileSize: 256,
             attribution: '© OpenStreetMap contributors'
+          },
+          [TERRAIN_SOURCE_ID]: {
+            type: 'raster-dem',
+            url: 'https://demotiles.maplibre.org/terrain-tiles/tiles.json',
+            tileSize: 256
           }
+        },
+        terrain: {
+          source: TERRAIN_SOURCE_ID,
+          exaggeration: 1
         },
         layers: [
           {
@@ -247,14 +301,19 @@
     map.on('load', () => {
       map.resize();
       enforceGlobalProjection();
-
-      if (!map.getLayer(phoneLayer.id)) {
-        map.addLayer(phoneLayer);
-      }
-
+      createPhoneMarker();
+      updatePhoneMarker();
+      resolvePhoneAltitude();
       syncChaseCamera();
       setStatus(hasLocation ? 'Third-person map live' : 'Third-person map — waiting for GPS');
       setTelemetry();
+    });
+
+    map.on('sourcedata', event => {
+      if (event && event.sourceId === TERRAIN_SOURCE_ID && lastLocation) {
+        resolvePhoneAltitude();
+        setTelemetry();
+      }
     });
 
     map.on('projectiontransition', enforceGlobalProjection);
@@ -276,7 +335,7 @@
     onLocation(latitude, longitude, accuracy, altitude, verticalAccuracy) {
       const lat = Number(latitude);
       const lon = Number(longitude);
-      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+      if (!finite(lat) || !finite(lon)) return;
 
       const firstFix = !hasLocation;
       hasLocation = true;
@@ -289,6 +348,8 @@
       };
 
       enforceGlobalProjection();
+      resolvePhoneAltitude();
+      updatePhoneMarker();
       if (firstFix) map.setZoom(START_ZOOM);
       syncChaseCamera();
       map.triggerRepaint();
@@ -298,7 +359,7 @@
 
     onHeading(heading) {
       const value = Number(heading);
-      if (!Number.isFinite(value)) return;
+      if (!finite(value)) return;
       lastHeading = ((value % 360) + 360) % 360;
       syncChaseCamera();
       map.triggerRepaint();
