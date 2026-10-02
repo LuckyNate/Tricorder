@@ -22,6 +22,8 @@
   const MIN_ZOOM = 1;
   const ZOOM_LIMIT = 19;
   const PHONE_SCREEN_Y = 0.70;
+  const CHASE_PADDING_FULL_ZOOM = 12;
+  const CHASE_PADDING_ZERO_ZOOM = 8;
   const PHONE_DOT_RADIUS_METERS = 1.0;
   const PHONE_DOT_HEIGHT_METERS = 0.6;
   const EARTH_RADIUS_METERS = 6371008.8;
@@ -47,8 +49,25 @@
 
   function chasePadding() {
     const height = Math.max(1, mapHost.clientHeight || 1);
-    const top = Math.round(height * (PHONE_SCREEN_Y * 2 - 1));
-    return { top: Math.max(0, top), right: 0, bottom: 0, left: 0 };
+    const fullTop = Math.max(0, Math.round(height * (PHONE_SCREEN_Y * 2 - 1)));
+    const zoom = map ? map.getZoom() : START_ZOOM;
+
+    if (zoom >= CHASE_PADDING_FULL_ZOOM) {
+      return { top: fullTop, right: 0, bottom: 0, left: 0 };
+    }
+
+    if (zoom <= CHASE_PADDING_ZERO_ZOOM) {
+      return { top: 0, right: 0, bottom: 0, left: 0 };
+    }
+
+    const blend = (zoom - CHASE_PADDING_ZERO_ZOOM) /
+      (CHASE_PADDING_FULL_ZOOM - CHASE_PADDING_ZERO_ZOOM);
+    return {
+      top: Math.round(fullTop * blend),
+      right: 0,
+      bottom: 0,
+      left: 0
+    };
   }
 
   function syncChaseCamera() {
@@ -92,6 +111,7 @@
 
       if (requestedZoom < ZOOM_LIMIT) {
         map.setZoom(requestedZoom);
+        syncChaseCamera();
       }
 
       setTelemetry();
@@ -102,6 +122,7 @@
       if (event.touches && event.touches.length >= 2) return;
       pinchStartDistance = null;
       pinchStartZoom = null;
+      syncChaseCamera();
       setTelemetry();
     };
 
@@ -230,7 +251,6 @@
             url: 'https://tiles.mapterhorn.com/tilejson.json',
             tileSize: 256
           });
-          map.setTerrain({ source: 'tricorder-terrain', exaggeration: 1.0 });
         }
       } catch (_) {
       }
