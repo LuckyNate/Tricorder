@@ -24,6 +24,7 @@
   const PHONE_SCREEN_Y = 0.70;
   const PHONE_DOT_RADIUS_METERS = 1.0;
   const PHONE_DOT_HEIGHT_METERS = 0.6;
+  const EARTH_RADIUS_METERS = 6371008.8;
 
   let map = null;
   let hasLocation = false;
@@ -121,19 +122,24 @@
     }
   }
 
-  function phoneMercatorTransform() {
+  function phoneGlobeModelMatrix() {
     if (!lastLocation) return null;
+
+    const longitudeRadians = lastLocation.longitude / 180 * Math.PI;
+    const latitudeRadians = lastLocation.latitude / 180 * Math.PI;
     const altitude = terrainElevationAtPhone() + PHONE_DOT_HEIGHT_METERS;
-    const mercator = window.maplibregl.MercatorCoordinate.fromLngLat(
-      [lastLocation.longitude, lastLocation.latitude],
-      altitude
-    );
-    return {
-      x: mercator.x,
-      y: mercator.y,
-      z: mercator.z,
-      scale: mercator.meterInMercatorCoordinateUnits()
-    };
+    const scale = 1 / EARTH_RADIUS_METERS;
+
+    return new THREE.Matrix4()
+      .makeRotationY(longitudeRadians)
+      .multiply(new THREE.Matrix4().makeRotationX(-latitudeRadians))
+      .multiply(new THREE.Matrix4().makeTranslation(
+        0,
+        0,
+        1 + altitude / EARTH_RADIUS_METERS
+      ))
+      .multiply(new THREE.Matrix4().makeRotationX(Math.PI / 2))
+      .multiply(new THREE.Matrix4().makeScale(scale, scale, scale));
   }
 
   const phoneLayer = {
@@ -161,16 +167,12 @@
     },
 
     render(gl, args) {
-      const transform = phoneMercatorTransform();
-      if (!transform) return;
+      const modelMatrix = phoneGlobeModelMatrix();
+      if (!modelMatrix) return;
 
       const projectionMatrix = new THREE.Matrix4().fromArray(
         args.defaultProjectionData.mainMatrix
       );
-
-      const modelMatrix = new THREE.Matrix4()
-        .makeTranslation(transform.x, transform.y, transform.z)
-        .scale(new THREE.Vector3(transform.scale, -transform.scale, transform.scale));
 
       this.camera.projectionMatrix = projectionMatrix.multiply(modelMatrix);
       this.renderer.resetState();
@@ -193,6 +195,9 @@
       canvasContextAttributes: { antialias: true },
       style: {
         version: 8,
+        projection: {
+          type: 'vertical-perspective'
+        },
         sources: {
           osm: {
             type: 'raster',
