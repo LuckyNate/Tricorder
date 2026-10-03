@@ -375,6 +375,7 @@
       attributionControl: true,
       renderWorldCopies: false,
       fadeDuration: 0,
+      maxTileCacheSize: 128,
       canvasContextAttributes: { antialias: true },
       style: {
         version: 8,
