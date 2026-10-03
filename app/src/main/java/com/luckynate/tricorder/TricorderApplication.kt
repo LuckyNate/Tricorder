@@ -31,6 +31,7 @@ class TricorderApplication : Application(), Application.ActivityLifecycleCallbac
 
         installMediaPermissionBridge(activity, webView)
         ensureAudioPermission(activity)
+        evaluate(webView, "document.getElementById('version')&&(document.getElementById('version').textContent='Version: ${BuildConfig.VERSION_NAME}');")
 
         val sensors = activity.getSystemService(Context.SENSOR_SERVICE) as SensorManager
         val locations = activity.getSystemService(Context.LOCATION_SERVICE) as LocationManager
